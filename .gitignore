@@ -1,0 +1,36 @@
+# Cabal and GHC build artefacts
+dist/
+dist-newstyle/
+*.hi
+*.o
+
+# Haskell Tool Stack-related
+.stack-work/
+tests/integration/tests/**/*.yaml.lock
+
+# Haskell Language Server-related
+hie.yaml
+
+# Emacs-related
+.dir-locals.el
+*_flymake.hs
+
+# Vim-related
+*.swp
+*.tag
+
+# IntelliJ IDE-related
+.idea/
+*.iml
+
+# macOS-related
+.DS_Store
+
+# VS Code workspace settings
+.vscode
+
+# VS Code Counter (Visual Studio Code Extension)-related
+.VSCodeCounter
+
+# Unexplained
+*~
