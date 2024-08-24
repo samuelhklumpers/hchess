@@ -1,6 +1,7 @@
 module Main (main) where
 
-import Lib (chessGame)
+import Lib (chessGame, chessServer)
 
 main :: IO ()
-main = chessGame >> return ()
+main = do
+    chessServer

@@ -1,6 +1,6 @@
 name:                hchess
 version:             0.1.0.0
-github:              "githubuser/hchess"
+github:              "samuelhklumpers/hchess"
 license:             BSD-3-Clause
 author:              "Author name here"
 maintainer:          "example@example.com"
@@ -40,6 +40,14 @@ library:
   - parsec
   - transformers
   - lens
+  - wai
+  - websockets
+  - wai-websockets
+  - unbounded-delays
+  - aeson
+  - bimap
+  - stm
+  - bytestring
 
 executables:
   hchess-exe:

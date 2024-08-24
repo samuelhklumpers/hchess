@@ -1,9 +1,12 @@
 {-# LANGUAGE TypeFamilies, TupleSections, TemplateHaskell #-}
 {-# OPTIONS_GHC -Wno-missing-export-lists #-}
+{-# LANGUAGE DeriveGeneric, OverloadedStrings #-}
+{-# LANGUAGE LambdaCase #-}
 
-module Lib (chessRunner, chessGame) where
+module Lib (chessRunner, chessGame, chessServer) where
 
 import qualified Data.Map as M
+import qualified Data.Set as S
 import Text.Parsec
     ( char,
       digit,
@@ -20,14 +23,27 @@ import Data.Either ( fromRight )
 import Data.Maybe (catMaybes, isNothing, isJust, mapMaybe)
 import Control.Monad.Trans.State.Lazy ( StateT(runStateT), get )
 import Control.Monad.Trans.Writer.Lazy ( tell, WriterT (runWriterT) )
-import Control.Lens ( makeLenses, use, (%=), (.=), at, Getter, to, (^.) )
+import Control.Lens ( makeLenses, use, (%=), (.=), at, Getter, to, (^.), view, (&), (.~), (?~), (%~), set, over )
 import Control.Monad.Trans.Class ( MonadTrans(..) )
-import Control.Monad (when, forM_)
+import Control.Monad (when, forM_, forever)
 import Text.Parsec.Language (haskell)
 import Control.Monad.IO.Class (liftIO)
-import Data.List (intercalate)
+import Data.List (intercalate, uncons)
 import Data.Char (toLower)
-import Control.Applicative ((<|>))
+import Network.WebSockets
+    ( acceptRequest,
+      receiveDataMessage,
+      runServer,
+      Connection,
+      ServerApp,
+      WebSocketsData(fromDataMessage), sendBinaryData )
+import Control.Concurrent.Timeout ( timeout )
+import Data.Aeson (decode, ToJSON, FromJSON, encode)
+import GHC.Generics (Generic)
+import Control.Concurrent.STM
+    ( atomically, newTMVarIO, readTMVar, takeTMVar, writeTMVar, TMVar )
+import qualified Data.Bimap as B
+import qualified Data.ByteString.Lazy as LB
 
 
 cause :: (MonadTrans t) => a -> t (WriterT [a] IO) ()
@@ -37,7 +53,6 @@ whenJust :: Monad m => Maybe a -> (a -> m ()) -> m ()
 whenJust = forM_
 
 -- * Definitions
---type Game s e = e -> s -> (s , [e])
 type Game s e = e -> StateT s (WriterT [e] IO) ()
 
 combine :: Game s e -> Game s e -> Game s e
@@ -46,8 +61,8 @@ combine f g e = f e >> g e
 compile :: Foldable t => t (Game s e) -> Game s e
 compile = foldr1 combine
 
-data Colour = Black | White deriving (Show, Eq, Ord)
-data PieceType = K | Q | R | B | N | P deriving (Show, Eq)
+data Colour = Black | White deriving (Show, Eq, Ord, Generic)
+data PieceType = K | Q | R | B | N | P deriving (Show, Eq, Generic)
 
 type Piece = (PieceType, Colour)
 
@@ -55,11 +70,16 @@ type Rank = Int
 type File = Int
 type Square = (File, Rank)
 
+type Room = String
+type PlayerName = String
+type PlayerId = (Room, PlayerName)
+
 type ChessBoard = M.Map Square Piece
 data ChessState = ChessState
-    { _board :: ChessBoard , _turn :: Int, _castling :: [Square]
+    { _board :: ChessBoard , _turn :: Int, _castling :: S.Set Square
     , _enpassant :: Maybe (Int, Square, Square) , _zeroing :: Int
-    , _touch :: M.Map Colour (Square, Piece) } deriving (Show, Eq)
+    , _touch :: M.Map Colour (Square, Piece) , _players :: B.Bimap String Colour
+    , _connections :: M.Map Colour PlayerId } deriving (Show, Eq)
 makeLenses ''ChessState
 
 toMove :: Getter ChessState Colour
@@ -126,7 +146,7 @@ parseFEN :: String -> Either ParseError ChessBoard
 parseFEN = runParser fenParser (0 , 0) ""
 
 chessInitial :: ChessState
-chessInitial = ChessState initialBoard 0 [(0, 0), (4, 0), (7, 0), (0, 7), (4, 7), (7, 7)] Nothing 0 M.empty
+chessInitial = ChessState initialBoard 0 (S.fromList [(0, 0), (4, 0), (7, 0), (0, 7), (4, 7), (7, 7)]) Nothing 0 M.empty B.empty M.empty
     where
     initialFEN :: String
     initialFEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
@@ -157,7 +177,10 @@ data ChessEvent = UncheckedMove Square Square | UncheckedMovePiece Piece Square 
     | Touch Colour Square | Touch1 Colour Square | Touch1Turn Colour Square | Touch1Piece Colour Piece Square | Touch2 Piece Square Square
     | CheckedMovePiece Piece Square Square | Take Piece Square | RawMove Piece Square Square
     | Move Piece Square Square | Capture Piece Square Square
-    | NonCapture Piece Square Square | Set Square Piece | PrintBoard deriving Show
+    | NonCapture Piece Square Square | Set Square Piece | PrintBoard
+    | TimedOut Colour | PlayerConnected Colour
+    | SendBoard Colour | SendTile Colour Square | SendBoardAll | SendTileAll Square | PutTile Square (Maybe Piece)
+    | SendTurn Colour | SendRaw Colour ChessOutMessage | MoveEnd | Win Colour deriving Show
 
 
 type Chess = Game ChessState ChessEvent
@@ -209,6 +232,7 @@ moveMayCapture (Move p x y) = do
     case target of
         Nothing -> cause $ NonCapture p x y
         Just _  -> cause $ Capture p x y
+    cause $ MoveEnd
 moveMayCapture _ = return ()
 
 capture :: Chess
@@ -221,10 +245,75 @@ nonCapture :: Chess
 nonCapture (NonCapture p x y) = cause $ RawMove p x y
 nonCapture _ = return ()
 
+putTile :: Chess
+putTile (PutTile x p) = do
+    board . at x .= p
+    cause $ SendTileAll x
+putTile _ = return ()
+
+winRule :: Chess
+winRule MoveEnd = do
+    currentBoard <- use board
+    let kings = filter (\ x -> fst (snd x) == K) $ M.toList currentBoard
+    let kingMap = M.fromListWith (++) (fmap (\ (a, (_, c)) -> (c, [a])) kings)
+    
+    case M.lookup White kingMap >>= uncons of
+        Nothing -> cause $ Win Black
+        Just _  -> case M.lookup Black kingMap >>= uncons of
+            Nothing -> cause $ Win White
+            Just _  -> return ()
+winRule _ = return ()
+
+sendWin :: Chess
+sendWin (Win c) = do
+    let c' = if c == White then Black else White
+
+    cause $ SendRaw c $ Status "You win :)"
+    cause $ SendRaw c' $ Status "You lose :("
+sendWin _ = return ()
+
+data ChessOutMessage = Board ChessBoard | Tile Square (Maybe Piece) | Turn Colour | Status String deriving (Show, Eq, Generic)
+
+instance ToJSON ChessOutMessage where
+instance FromJSON ChessOutMessage where
+instance ToJSON Colour where
+instance FromJSON Colour where
+instance ToJSON PieceType where
+instance FromJSON PieceType where
+
+serverRule :: TMVar (M.Map PlayerId Connection) -> Chess
+serverRule connRef e = do
+    case e of
+        (PlayerConnected c) -> do
+            cause $ SendBoard c
+        (SendTile c a)  -> do
+            p <- use $ board . at a
+            cause $ SendRaw c $ Tile a p
+        (SendBoard c)   -> do
+            currentBoard <- use board
+            cause $ SendRaw c $ Board currentBoard
+        SendBoardAll    -> do
+            cause $ SendBoard White
+            cause $ SendBoard Black
+        (SendTileAll a) -> do
+            cause $ SendTile White a
+            cause $ SendTile Black a
+        (SendTurn c)    -> do
+            cause $ SendRaw White $ Turn c
+            cause $ SendRaw Black $ Turn c
+        (SendRaw c d)   -> do
+            conns <- liftIO $ atomically $ readTMVar connRef
+            connMap <- use connections
+
+            whenJust (M.lookup c connMap >>= \ x -> M.lookup x conns) $ \ conn -> do
+                liftIO $ sendBinaryData conn $ encode d
+        _               -> return ()
+
+
 rawMove :: Chess
 rawMove (RawMove p x y) = do
-    board . at y .= Just p
-    board . at x .= Nothing
+    cause $ PutTile y (Just p)
+    cause $ PutTile x Nothing
 rawMove _ = return ()
 
 uncheckedMovePiece :: Chess
@@ -253,18 +342,42 @@ rank Black x = x
 
 kingMove :: Chess
 kingMove (UncheckedMoveType p K _ x y)  = do
-    when (manhattan x y <= 1) $ cause (CheckedMovePiece p x y)
+    when (manhattan x y <= 1) $ do
+        castling %= S.delete x
+        cause (CheckedMovePiece p x y)
 kingMove _ = return ()
 
-enumFromTo' :: (Enum a, Ord a) => a -> a -> [a]
-enumFromTo' x y
+castlingMove :: Chess
+castlingMove (UncheckedMoveType p K _ a@(ax , ay) b@(bx , by)) = do
+    when (ay == by && abs (bx - ax) == 2) $ do
+        castle <- use castling
+        s <- get
+        let c = if ax < bx then (bx + 1 , ay) else (bx - 2 , ay)
+        let d = if ax < bx then (bx - 1 , ay) else (bx + 1 , ay)
+
+        when (c `S.member` castle && a `S.member` castle && rookP s c d) $ do
+            rookMaybe <- use $ board . at c
+            castling %= S.delete c
+
+            whenJust rookMaybe $ \ rook -> do
+                castling %= S.delete a
+
+                cause $ RawMove rook c d
+                cause $ CheckedMovePiece p a b
+castlingMove _ = return ()
+
+enumFromToLR' :: (Enum a, Ord a) => a -> a -> [a]
+enumFromToLR' x y
     | x < y = enumFromTo x y
     | otherwise = reverse $ enumFromTo y x
 
+enumFromTo' :: (Enum a, Ord a, Num a) => a -> a -> [a]
+enumFromTo' x y = enumFromTo (min x y + 1) (max x y - 1)
+
 rookPath :: Square -> Square -> [[Square]]
 rookPath (ax, ay) (bx, by)
-  | ax == bx = [drop 1 $ (ax ,) <$> enumFromTo' ay by]
-  | ay == by = [drop 1 $ (, ay) <$> enumFromTo' ax bx]
+  | ax == bx = [(ax ,) <$> enumFromTo' ay by]
+  | ay == by = [(, ay) <$> enumFromTo' ax bx]
   | otherwise = []
 
 pathIsEmpty :: ChessState -> [Square] -> Bool
@@ -275,7 +388,7 @@ rookP s a b = any (pathIsEmpty s) $ rookPath a b
 
 bishopPath :: Square -> Square -> [[Square]]
 bishopPath (ax, ay) (bx, by)
-  | abs (bx - ax) == abs (by - ay) = [drop 1 $ zip (enumFromTo' ax bx) (enumFromTo' ay by)]
+  | abs (bx - ax) == abs (by - ay) = [zip (enumFromTo' ax bx) (enumFromTo' ay by)]
   | otherwise = []
 
 bishopP :: ChessState -> Square -> Square -> Bool
@@ -293,6 +406,7 @@ queenMove _ = return ()
 rookMove :: Chess
 rookMove (UncheckedMoveType p R _ x y) = do
     s <- get
+    castling %= S.delete x
     when (rookP s x y) $ cause (CheckedMovePiece p x y)
 rookMove _ = return ()
 
@@ -358,7 +472,7 @@ pawnEP (UncheckedMoveType p P _ x y)  = do
 pawnEP _ = return ()
 
 rawTake :: Chess
-rawTake (Take _ y) = board . at y .= Nothing
+rawTake (Take _ y) = cause $ PutTile y Nothing
 rawTake _ = return ()
 
 generalizeMove :: Chess
@@ -396,13 +510,9 @@ movePrintBoard (NonCapture {}) = cause PrintBoard
 movePrintBoard _ = return ()
 
 moveEnd :: Chess
-moveEnd e = case e of
-    Capture {} -> go
-    NonCapture {} -> go
-    _ -> return ()
-    where
-    go = do
-        turn %= (+1)
+moveEnd MoveEnd = do
+    turn %= (+1)
+moveEnd _ = return ()
 
 printBoard :: Chess
 printBoard PrintBoard = use board >>= liftIO . putStrLn . ppBoard >> liftIO (putStrLn "")
@@ -410,10 +520,11 @@ printBoard _ = return ()
 
 chess :: Game ChessState ChessEvent
 chess = compile [
-        logEvent,
+        --logEvent, printBoard, movePrintBoard,
         touch1, touch1Turn, touch1Piece, touch1Colour, touch2Colour, uncheckedMovePiece, specializeMove,
-        kingMove, generalizeMove, capture, nonCapture, moveMayCapture, pawnMove, printBoard, movePrintBoard, moveEnd,
-        pawnDoubleMove, pawnCapture, pawnEP, rawTake, rawMove, queenMove, rookMove, bishopMove, knightMove
+        kingMove, generalizeMove, capture, nonCapture, moveMayCapture, pawnMove, moveEnd,
+        pawnDoubleMove, pawnCapture, pawnEP, rawTake, rawMove, queenMove, rookMove, bishopMove, knightMove, castlingMove,
+        putTile, winRule, sendWin
     ]
 
 chessInput :: IO ChessEvent
@@ -424,9 +535,94 @@ chessInput = do
         Left _  -> chessInput
         Right y -> return y
 
+secondUs :: Integer
+secondUs = 1000 * 1000
+
+data ChessMessage = TouchMsg Square | Register String String deriving (Show, Eq, Generic)
+
+instance ToJSON ChessMessage where
+instance FromJSON ChessMessage where
+
+interpretMessage :: Colour -> ChessMessage -> Maybe ChessEvent
+interpretMessage p (TouchMsg a) = Just $ Touch p a
+interpretMessage _ _ = Nothing
+
+withTMVarIO :: TMVar a -> (a -> IO a) -> IO ()
+withTMVarIO var f = do
+    val  <- atomically $ readTMVar var
+    val' <- f val
+    atomically $ writeTMVar var val'
+
+
+chessApp :: TMVar (M.Map PlayerId Connection) -> TMVar (M.Map String (TMVar ChessState)) -> ServerApp
+chessApp connRef refGames pending = do
+    conn <- acceptRequest pending
+
+    maybeMsg <- timeout (30 * secondUs) $ receiveDataMessage conn
+    let maybeRoom = maybeMsg >>= decode . fromDataMessage
+
+    whenJust maybeRoom $ \case
+        Register room ident -> do
+            games <- atomically $ readTMVar refGames
+
+            refGame <- case view (at room) games of
+                Just refGame -> do
+                    return refGame
+                Nothing -> do
+                    refGame <- newTMVarIO chessInitial
+                    atomically $ writeTMVar refGames (games & at room ?~ refGame)
+                    return refGame
+
+            game <- atomically $ readTMVar refGame
+            let playerMap = view players game
+
+            maybeColour <- case B.lookup ident playerMap of
+                Just colour -> do
+                    return $ Just colour -- TODO this is somewhat bad if the socket is still connected because now you can easily log in twice for better or worse
+                Nothing     -> case B.lookupR White playerMap of
+                    Just _  -> case B.lookupR Black playerMap of
+                        Just _  -> do
+                            return Nothing
+                        Nothing -> do
+                            atomically $ writeTMVar refGame (game & players %~ B.insert ident Black)
+                            return $ Just Black
+                    Nothing -> do
+                        atomically $ writeTMVar refGame (game & players %~ B.insert ident White)
+                        return $ Just White
+
+            whenJust maybeColour $ \ colour -> mainloop colour (room , ident) refGame conn
+        _ -> return ()
+
+    where
+    mainloop :: Colour -> PlayerId -> TMVar ChessState -> Connection -> IO ()
+    mainloop colour ident st conn = do
+        withTMVarIO connRef (return . M.insert ident conn)
+        withTMVarIO st (return . over connections (M.insert colour ident))
+
+        withTMVarIO st (`runner` [PlayerConnected colour])
+
+        forever $ do
+            maybeMsg <- timeout (10 * 60 * secondUs) $ receiveDataMessage conn
+            let maybeEvent = maybeMsg >>= decode . fromDataMessage >>= interpretMessage colour
+
+            whenJust maybeEvent $ \ ev -> do
+                withTMVarIO st (`runner` [ev])
+            where
+            runner = recGame $ combine chess (serverRule connRef)
+
+            -- TODO you should probably be able to connect/disconnect/reconnect/crash/timeout
+
+
+chessServer :: IO ()
+chessServer = do
+    refGames <- newTMVarIO M.empty
+    refConn  <- newTMVarIO M.empty
+
+    runServer "0.0.0.0" 12345 (chessApp refConn refGames)
+
 parseSquare :: Parsec String () ChessEvent
 parseSquare = do
-    c <- choice [(char 'W' >> return White) , (char 'B' >> return Black)]
+    c <- choice [char 'W' >> return White , char 'B' >> return Black]
     _ <- char ' '
     x <- fromInteger <$> natural haskell
     y <- fromInteger <$> natural haskell
@@ -439,8 +635,8 @@ chessRunner = recGame chess
 chessGame :: IO ChessState
 chessGame = runGame chessRunner chessInput chessInitial
 
-test :: IO ()
-test = do
+testEnPassant :: IO ()
+testEnPassant = do
     newState <- chessRunner chessInitial
         [ Touch White (4, 6), Touch White (4, 4)
         , Touch Black (0, 1), Touch Black (0, 2)
@@ -457,6 +653,32 @@ test = do
         _enpassant = Just (4,(3,2),(3,3))
     }
 
-    print (newState == targetState)
+    if newState == targetState then
+        putStrLn "All good!"
+    else
+        putStrLn ":("
 
-    putStrLn "All good!"
+testLongCastle :: IO ()
+testLongCastle = do
+    newState <- chessRunner chessInitial
+        [ Touch White (3, 6), Touch White (3, 5)
+        , Touch Black (2, 1), Touch Black (2, 2)
+        , Touch White (1, 7), Touch White (2, 5)
+        , Touch Black (3, 1), Touch Black (3, 2)
+        , Touch White (2, 7), Touch White (4, 5)
+        , Touch Black (4, 1), Touch Black (4, 2)
+        , Touch White (3, 7), Touch White (3, 6)
+        , Touch Black (5, 1), Touch Black (5, 2)
+        , Touch White (4, 7), Touch White (2, 7)]
+
+    let targetBoard = parseFEN "rnbqkbnr/pp4pp/2pppp2/8/8/2NPB3/PPPQPPPP/2KR1BNR"
+    let targetState = chessInitial {
+        _board = fromRight undefined targetBoard,
+        _turn  = 9,
+        _castling = S.fromList [(0, 0), (4, 0), (7, 0), (7, 7)]
+    }
+
+    if newState == targetState then
+        putStrLn "All good!"
+    else
+        putStrLn ":("
