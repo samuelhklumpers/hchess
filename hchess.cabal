@@ -7,8 +7,8 @@ cabal-version: 2.2
 name:           hchess
 version:        0.1.0.0
 description:    Please see the README on GitHub at <https://github.com/githubuser/hchess#readme>
-homepage:       https://github.com/githubuser/hchess#readme
-bug-reports:    https://github.com/githubuser/hchess/issues
+homepage:       https://github.com/samuelhklumpers/hchess#readme
+bug-reports:    https://github.com/samuelhklumpers/hchess/issues
 author:         Author name here
 maintainer:     example@example.com
 copyright:      2024 Author name here
@@ -21,11 +21,13 @@ extra-source-files:
 
 source-repository head
   type: git
-  location: https://github.com/githubuser/hchess
+  location: https://github.com/samuelhklumpers/hchess
 
 library
   exposed-modules:
-      Lib
+      Chess
+      Chess.Game
+      Chess.Rules
   other-modules:
       Paths_hchess
   autogen-modules:

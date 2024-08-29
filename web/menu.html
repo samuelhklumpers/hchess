@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+    <meta charset="UTF-8">
+    <head>
+        <link rel="stylesheet" type="text/css" href="menustyle.css">
+        <title>Chess Config Menu</title>
+    </head>
+    <body>
+        <h2>Enter match data:</h2>
+        <form>
+              <label for="roomform">Room:</label>
+              <input type="text" id="roomform" name="roomform"><br>
+              <label for="userform">User:</label>
+              <input type="text" id="userform" name="userform"><br>
+        </form>
+        <table>
+            <tr>
+                <td class="normalchess button">Go</td>
+            </tr>
+        </table>
+        <script>
+            var normal = document.querySelector('.normalchess')
+                room = document.querySelector('#roomform'),
+                user = document.querySelector('#userform')
+
+            normal.onclick = function (_) {
+                window.location.href = "/game.html?room=" + room.value + "&user=" + user.value;
+            };
+        </script>
+    </body>
+</html>
