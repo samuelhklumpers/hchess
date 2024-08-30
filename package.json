@@ -1,0 +1,15 @@
+{
+  "name": "hchess",
+  "version": "1.0.0",
+  "description": "",
+  "main": "game.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "sass": "sass --watch web/gamestyle.scss web/gamestyle.css"
+  },
+  "author": "",
+  "license": "ISC"
+}
