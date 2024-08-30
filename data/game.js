@@ -87,7 +87,7 @@ function process(effect, args) {
             let cell = playfield[i][j];
             
             if (shape.endsWith(".svg")) {
-                let draw_callback = _ => fetch("/chess/images/" + shape).then(response => response.text()).then(raw => draw_svg([i, j], raw, colour));
+                let draw_callback = _ => fetch("/images/" + shape).then(response => response.text()).then(raw => draw_svg([i, j], raw, colour));
                 processWaitlist = processWaitlist.then(draw_callback);
             }
             else {
@@ -103,7 +103,7 @@ function process(effect, args) {
                 let cell = playfield[i][j];
                 
                 if (shape.endsWith(".svg")) {
-                    let draw_callback = _ => fetch("/chess/images/" + shape).then(response => response.text()).then(raw => draw_svg([i, j], raw, colour));
+                    let draw_callback = _ => fetch("/images/" + shape).then(response => response.text()).then(raw => draw_svg([i, j], raw, colour));
                     processWaitlist = processWaitlist.then(draw_callback);
                 }
                 else {

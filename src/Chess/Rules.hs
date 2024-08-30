@@ -23,6 +23,7 @@ import Control.Concurrent.STM
 import Chess.Game
 import Control.Monad.Trans.Except (runExceptT, throwE)
 import Control.Monad.Trans.Class (lift)
+import Data.Bifunctor (first)
 
 
 -- * Rules
@@ -192,6 +193,7 @@ sendAvailableMoves g (UpdateSelection c _) = do -- PS: you might not want to cau
             unless (null r) $ cause $ SendMarkAvailableMove c b
 sendAvailableMoves _ _ = return ()
 
+
 clearAvailableMoves :: Chess
 clearAvailableMoves (UpdateSelection c _) = do
     maybeSelected <- use $ touch . at c
@@ -200,16 +202,17 @@ clearAvailableMoves (UpdateSelection c _) = do
         Just _  -> return ()
 clearAvailableMoves _ = return ()
 
+
 serverRule :: TMVar (M.Map PlayerId Connection) -> Chess
 serverRule connRef e = do
     case e of
         (PlayerConnected c) -> do
             cause $ SendBoard c
         (SendDrawTile c a p s)  -> do
-            cause $ SendRaw c $ Tile (screenTransform c a) p s
+            cause $ SendRaw c $ Tile (screenTransform c a) (first pieceImage <$> p) s
         (SendBoard c)   -> do
             currentBoard <- use board
-            cause $ SendRaw c $ Board (M.mapKeys (screenTransform c) currentBoard)
+            cause $ SendRaw c $ Board (M.mapKeys (screenTransform c) $ M.map (first pieceImage) currentBoard)
         SendBoardAll    -> do
             cause $ SendBoard White
             cause $ SendBoard Black

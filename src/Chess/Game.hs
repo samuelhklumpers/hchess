@@ -69,6 +69,14 @@ instance FromJSON PieceType where
 
 data Turn = Normal Int | Promoting Int Colour deriving (Show, Eq)
 
+pieceImage :: PieceType -> String
+pieceImage K = "king.svg"
+pieceImage Q = "queen.svg"
+pieceImage R = "rook.svg"
+pieceImage B = "bishop.svg"
+pieceImage N = "knight.svg"
+pieceImage P = "pawn.svg"
+
 moveNumber :: Turn -> Int
 moveNumber (Normal n) = n
 moveNumber (Promoting n _) = n
@@ -206,7 +214,7 @@ runGame runner input s = do
 
 
 
-data ChessOutMessage = Board ChessBoard | Tile Square (Maybe Piece) String | Turn Colour
+data ChessOutMessage = Board (M.Map Square (String , Colour)) | Tile Square (Maybe (String , Colour)) String | Turn Colour
     | Status String | Promotion | MarkAvailableMove Square | ClearAvailableMoves deriving (Show, Eq, Generic)
 
 instance ToJSON ChessOutMessage where
