@@ -1,21 +1,4 @@
-{-# LANGUAGE TypeFamilies, DeriveGeneric, OverloadedStrings, LambdaCase #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-
-
--- [x] properly close session on disconnect/win
--- [x] test if game proceeds properly
---   [x] promoting
---     [x] turns, await text input
- 
--- [ ] checkers
---   [ ] simultation
---     [ ] speedup (datakinds + rule trie?)
---     [ ] split pure/IO output of rules (e.g. StateT s (Writer ([e], IO ()) ())
--- [ ] torus
--- [ ] line of sight
--- [ ] funky pieces
-
--- [ ] change event handling and everything to let rules decide when to cause something themselves (e.g. timer)
+{-# LANGUAGE TypeFamilies, DeriveGeneric, OverloadedStrings, LambdaCase, ScopedTypeVariables #-}
 
 
 module Chess (chessRunner, chessGame, chessServer) where
@@ -171,12 +154,12 @@ roomRule refGames room e = case e of
 
 
 
-chessServer :: IO ()
-chessServer = do
+chessServer :: Int -> IO ()
+chessServer port = do
     refGames <- newTMVarIO M.empty
     refConn  <- newTMVarIO M.empty
 
-    runServer "0.0.0.0" 58846 (chessApp refConn refGames)
+    runServer "0.0.0.0" port (chessApp refConn refGames)
 
 parseSquare :: Parsec String () ChessEvent
 parseSquare = do

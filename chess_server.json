@@ -1,0 +1,5 @@
+{
+    "http_port": 58845,
+    "game_port": 58846,
+    "data_dir": "/home/you/hchess/data"
+}
