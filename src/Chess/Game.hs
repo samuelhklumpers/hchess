@@ -16,9 +16,9 @@ import Text.Parsec
       Parsec, ParseError )
 
 import Data.Either ( fromRight )
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, mapMaybe)
 import Control.Monad.Trans.State.Lazy ( StateT(runStateT) )
-import Control.Monad.Trans.Writer.Lazy ( tell, WriterT (runWriterT) )
+import Control.Monad.Trans.Writer.Lazy ( tell, Writer, runWriter )
 import Control.Lens ( makeLenses, Getter, to )
 import Control.Monad.Trans.Class ( MonadTrans(..) )
 import Control.Monad (forM_)
@@ -27,13 +27,20 @@ import Data.Aeson (ToJSON, FromJSON)
 import qualified Data.Bimap as B
 
 
-cause :: (MonadTrans t) => a -> t (WriterT [a] IO) ()
-cause = lift . tell . (:[])
+-- What does this do?
+-- > IO cannot influence the game! (IO must come from the driver)
+data Action e = Event e | Effect (IO ())
+
+cause :: (MonadTrans t) => a -> t (Writer [Action a]) ()
+cause = lift . tell . (:[]) . Event
+
+effect :: (MonadTrans t) => IO () -> t (Writer [Action a]) ()
+effect = lift . tell . (:[]) . Effect
 
 whenJust :: Monad m => Maybe a -> (a -> m ()) -> m ()
 whenJust = forM_
 
-type Game s e = e -> StateT s (WriterT [e] IO) ()
+type Game s e = e -> StateT s (Writer [Action e]) ()
 
 combine :: Game s e -> Game s e -> Game s e
 combine f g e = f e >> g e
@@ -164,24 +171,43 @@ parseFEN = runParser fenParser (0 , 0) ""
 -- * Evaluation
 recGame :: Game s e -> Runner s e
 recGame _ s [] = return s
-recGame g s (e : es) = do
-    ((_ , s') , es') <- runWriterT (runStateT (g e) s)
-    s'' <- recGame g s' es'
-    recGame g s'' es
+recGame g s (a : es) = case a of 
+    Event e -> do
+        let ((_ , s') , es') = runWriter (runStateT (g e) s)
+        s'' <- recGame g s' es'
+        recGame g s'' es
+    Effect e -> do
+        e 
+        recGame g s es
 
+fromEvent :: Action e -> Maybe e
+fromEvent (Event e) = Just e
+fromEvent _ = Nothing
 
-type Runner s e = s -> [e] -> IO s
+simulateUntil :: (e -> Bool) -> Game s e -> s -> [e] -> (s , [e])
+simulateUntil _ _ s [] = (s , [])
+simulateUntil p g s queue@(e : queue')
+    | p e       = (s , queue)
+    | otherwise = 
+        let ((_ , s') , consequences) = runWriter (runStateT (g e) s) in
+        let (s'', remainder) = simulateUntil p g s' (mapMaybe fromEvent consequences) in
+        if null remainder then
+            simulateUntil p g s'' queue'
+        else
+            (s'' , remainder ++ queue')
+
+type Runner s e = s -> [Action e] -> IO s
 
 runGame :: Runner s e -> IO e -> s -> IO s
 runGame runner input s = do
     e <- input
-    s' <- runner s [e]
+    s' <- runner s [Event e]
     runGame runner input s'
 
 
 
 data ChessOutMessage = Board ChessBoard | Tile Square (Maybe Piece) String | Turn Colour
-    | Status String | Promotion deriving (Show, Eq, Generic)
+    | Status String | Promotion | MarkAvailableMove Square | ClearAvailableMoves deriving (Show, Eq, Generic)
 
 instance ToJSON ChessOutMessage where
 instance FromJSON ChessOutMessage where
@@ -197,7 +223,7 @@ data ChessEvent = UncheckedMove Square Square | UncheckedMovePiece Piece Square 
     | SendSelect Colour Square Bool | NextSubTurn
     | SendTurn Colour | SendRaw Colour ChessOutMessage | MoveEnd | Win Colour | PlayerDisconnected Colour
     | CloseRoom | UpdateSelection Colour Square | SendPromotionPrompt Colour | Promote Colour String
-    | NextTurn deriving Show
+    | NextTurn | SendMarkAvailableMove Colour Square | SendClearAvailableMoves Colour deriving Show
 
 
 

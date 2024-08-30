@@ -34,6 +34,10 @@ html {
   font-size: 2rem;
 }
 
+#overlay {
+    position: absolute;
+}
+
 #playfield {
   display: flex;
   flex-direction: column;

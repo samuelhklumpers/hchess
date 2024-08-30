@@ -15,10 +15,10 @@ let dr = 80;
 
 
 function toHTML(html) {
-  let temp = document.createElement('template');
-  html = html.trim();
-  temp.innerHTML = html;
-  return temp.content.firstChild;
+    let temp = document.createElement('template');
+    html = html.trim();
+    temp.innerHTML = html;
+    return temp.content.firstChild;
 }
 
 
@@ -26,10 +26,10 @@ function draw_svg(ix, raw, col) {
     let [i, j] = ix;
     let cell = playfield[i][j];
     let im = toHTML(raw);
-
+    
     im.setAttribute("class", "square");
     im.setAttribute("fill", col);
-
+    
     cell.innerHTML = "";
     cell.appendChild(im);
 }
@@ -38,17 +38,17 @@ function draw_svg(ix, raw, col) {
 function draw_text(cell, shape, colour) {
     cell.innerHTML = "";
     cell.innerHTML = shape;
-
+    
     cell.style.color = colour;
-
+    
     let children = cell.children;
-
+    
     if (children.length > 1)
     {
         cell.removeChild(children[0]);
     }
 }
-
+    
 
 let processWaitlist = Promise.resolve(0);
 
@@ -56,6 +56,25 @@ function process(effect, args) {
     console.log(effect, args);
 
     switch (effect) {
+        case "MarkAvailableMove": {
+            let [j, i] = args;
+
+            let cell = overlay[i][j]; // so realistically this should use a different overlay now
+            cell.innerHTML = "x";
+
+            break;
+        }
+        case "ClearAvailableMoves": {
+
+            for (let i = 0; i < 8; ++i) {
+                for (let j = 0; j < 8; ++j) {
+                    let cell = overlay[i][j];
+                    cell.innerHTML = "";
+                }
+            }
+
+            break;
+        }
         case "Tile": {
             let [[j, i], piece, colour] = args;
         
@@ -148,7 +167,7 @@ socket.onmessage = function (event) {
     }
     msg.text().then(f);
 };
-
+    
 socket.onopen = function (_) {
     socket.send(aesonEncode([room, user], "Register"));
 };
@@ -165,43 +184,31 @@ function aesonEncode(contents, tag) {
 
 
 function createBoard(n, m) {
-    let stylelink = document.querySelector("#stylesheet");
-    let sheet = stylelink.sheet;
-    let rules = sheet.rules;
-
-    width = 80 / m;
-    height = 80 / n;
-    dr = Math.floor(Math.min(width, height));
-
-    for (let i = 0; i < rules.length; ++i)
-    {
-        let rule = rules[i];
-        if (rule.selectorText === "tr")
-        {
-            rule.style.height = dr.toString() + "vh";
-        }
-        else if (rule.selectorText === "td")
-        {
-            rule.style.width = dr.toString() + "vh";
-        }
-    }
-
+    //let stylelink = document.querySelector("#stylesheet");
+    //let sheet = stylelink.sheet;
+    //let rules = sheet.rules;
+    
     for (let i = 0; i < n; i++) {
         let row = document.createElement("div");
         row.classList.add("row");
         row.classList.add("chess-row");
         displayfield.appendChild(row);
-        // let row = displayfield.insertRow(i);
-        // let orow = overfield.insertRow(i);
+
+        let orow = document.createElement("div");
+        orow.classList.add("row");
+        orow.classList.add("chess-row");
+        overfield.appendChild(orow);
+
         playfield.push([]);
-        // overlay.push([]);
+        overlay.push([]);
         for (let j = 0; j < m; j++) {
-            // let cell = row.insertCell(j);
             let cell = document.createElement("div");
             cell.classList.add("col");
-
             row.appendChild(cell);
-            // let ocell = orow.insertCell(j);
+            
+            let ocell = document.createElement("div");
+            ocell.classList.add("col");
+            orow.appendChild(ocell);
 
 
             if ((i + j) % 2 === 1)
@@ -213,7 +220,7 @@ function createBoard(n, m) {
                 socket.send(aesonEncode([j, i], "TouchMsg"));
             };
 
-            // overlay[i].push(ocell);
+            overlay[i].push(ocell);
             playfield[i].push(cell);
         }
     }

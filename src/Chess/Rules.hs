@@ -9,8 +9,7 @@ import qualified Data.Bimap as B
 import Data.Maybe (isNothing, isJust, mapMaybe, fromJust)
 import Control.Monad.Trans.State.Lazy ( get )
 import Control.Lens ( use, (%=), (.=), at, (^.), (?=) )
-import Control.Monad (when, forM_)
-import Control.Monad.IO.Class (liftIO)
+import Control.Monad (when, forM_, unless)
 import Data.List (intercalate, uncons)
 import Data.Char (toLower)
 import Network.WebSockets
@@ -79,8 +78,8 @@ connectSendStatus (PlayerConnected p) = do
     currentTurn <- use turn
     currentToMove <- use toMove
 
-    case currentTurn of 
-        Normal _      -> cause $ SendRaw p $ Status ("It's " ++ show (fromJust currentToMove) ++ "'s turn") 
+    case currentTurn of
+        Normal _      -> cause $ SendRaw p $ Status ("It's " ++ show (fromJust currentToMove) ++ "'s turn")
         Promoting _ c -> cause $ SendRaw p $ Status ("It's " ++ show c ++ "'s turn")
 connectSendStatus _ = return ()
 
@@ -90,8 +89,8 @@ nextTurnSendStatus NextTurn = do
     currentToMove <- use toMove
 
     forM_ [White, Black] $ \ p ->
-        case currentTurn of 
-            Normal _      -> cause $ SendRaw p $ Status ("It's " ++ show (fromJust currentToMove) ++ "'s turn") 
+        case currentTurn of
+            Normal _      -> cause $ SendRaw p $ Status ("It's " ++ show (fromJust currentToMove) ++ "'s turn")
             Promoting _ c -> cause $ SendRaw p $ Status ("It's " ++ show c ++ "'s turn")
 nextTurnSendStatus _ = return ()
 
@@ -179,6 +178,28 @@ sendWin (Win c) = do
     cause $ SendRaw c' $ Status "You lose :("
 sendWin _ = return ()
 
+isMove :: ChessEvent -> Bool
+isMove (Move {}) = True
+isMove _ = False
+
+sendAvailableMoves :: Chess -> Chess
+sendAvailableMoves g (UpdateSelection c _) = do -- PS: you might not want to cause UpdateSelection in your simulation
+    maybeSelected <- use $ touch . at c
+    currentState <- get
+    whenJust maybeSelected $ \ (a , _) ->
+        forM_ [(i, j) | i <- [0..7], j <- [0..7]] $ \ b -> do
+            let (_ , r) = simulateUntil isMove g currentState [UncheckedMove a b]
+            unless (null r) $ cause $ SendMarkAvailableMove c b
+sendAvailableMoves _ _ = return ()
+
+clearAvailableMoves :: Chess
+clearAvailableMoves (UpdateSelection c _) = do
+    maybeSelected <- use $ touch . at c
+    case maybeSelected of
+        Nothing -> cause $ SendClearAvailableMoves c
+        Just _  -> return ()
+clearAvailableMoves _ = return ()
+
 serverRule :: TMVar (M.Map PlayerId Connection) -> Chess
 serverRule connRef e = do
     case e of
@@ -200,14 +221,17 @@ serverRule connRef e = do
             cause $ SendRaw Black $ Turn c
         (SendPromotionPrompt c) -> do
             cause $ SendRaw c Promotion
-        --(SendSelect c x s) -> do
-        --    cause $ SendRaw c $ SelectTile x s
+        (SendMarkAvailableMove c a) -> do
+            cause $ SendRaw c (MarkAvailableMove a)
+        (SendClearAvailableMoves c) -> do
+            cause $ SendRaw c ClearAvailableMoves
         (SendRaw c d)   -> do
-            conns <- liftIO $ atomically $ readTMVar connRef
             connMap <- use connections
+            effect $ do
+                conns <- atomically $ readTMVar connRef
 
-            whenJust (M.lookup c connMap >>= \ x -> M.lookup x conns) $ \ conn -> do
-                liftIO $ sendBinaryData conn $ encode d
+                whenJust (M.lookup c connMap >>= \ x -> M.lookup x conns) $ \ conn -> do
+                    sendBinaryData conn $ encode d
         _               -> return ()
 
 
@@ -273,7 +297,7 @@ enumFromToLR' x y
     | otherwise = reverse $ enumFromTo y x
 
 enumFromTo' :: (Enum a, Ord a, Num a) => a -> a -> [a]
-enumFromTo' x y 
+enumFromTo' x y
     | x < y = out
     | otherwise = reverse out
     where
@@ -408,7 +432,7 @@ generalizeMove _ = return ()
 
 logEvent :: Chess
 logEvent PrintBoard = return ()
-logEvent e = liftIO $ print e
+logEvent e = effect $ print e
 
 squares :: [[Square]]
 squares = (\y -> (,y) <$> [0..7]) <$> [0..7]
@@ -467,17 +491,17 @@ promote1 (Promote c str) = do
     currentTurn <- use turn
 
     r <- runExceptT $ do
-        case currentTurn of 
+        case currentTurn of
             Promoting _ c' -> do
                 currentPromotion <- lift $ use promoting
                 let x = (,) <$> B.lookupR str pieceStr <*> currentPromotion
-                --liftIO $ print $ (B.lookupR str pieceStr :: Maybe PieceType, currentPromotion)
+                --effect $ print $ (B.lookupR str pieceStr :: Maybe PieceType, currentPromotion)
                 whenJust x $ \ (pt , (a , _)) -> do
                     when (pt `elem` promotable && c == c') $ do
                         lift $ board . at a ?= (pt , c)
                         throwE ()
             _ -> return ()
-    
+
     case r of
         Left ()  -> do
             promoting .= Nothing
@@ -487,7 +511,7 @@ promote1 (Promote c str) = do
 promote1 _ = return ()
 
 printBoard :: Chess
-printBoard PrintBoard = use board >>= liftIO . putStrLn . ppBoard >> liftIO (putStrLn "")
+printBoard PrintBoard = use board >>= effect . putStrLn . ppBoard >> effect (putStrLn "")
 printBoard _ = return ()
 
 disconnect :: Chess
