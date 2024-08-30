@@ -56,6 +56,25 @@ function process(effect, args) {
     console.log(effect, args);
 
     switch (effect) {
+        case "MarkAvailableMove": {
+            let [j, i] = args;
+
+            let cell = overlay[i][j]; // so realistically this should use a different overlay now
+            cell.innerHTML = "x";
+
+            break;
+        }
+        case "ClearAvailableMoves": {
+
+            for (let i = 0; i < 8; ++i) {
+                for (let j = 0; j < 8; ++j) {
+                    let cell = overlay[i][j];
+                    cell.innerHTML = "";
+                }
+            }
+
+            break;
+        }
         case "Tile": {
             let [[j, i], piece, colour] = args;
         

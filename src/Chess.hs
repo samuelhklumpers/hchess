@@ -39,13 +39,14 @@ import Data.Either (fromRight)
 
 chess :: Game ChessState ChessEvent
 chess = compile [
-        logEvent,
-        printBoard, movePrintBoard,
-        touch1, touch1TurnRTS, touch1Piece, touch1Colour, touch2Colour, uncheckedMovePiece, specializeMove,
+        --logEvent,
+        --printBoard, movePrintBoard,
+        touch1, touch1Turn, touch1Piece, touch1Colour, touch2Colour, uncheckedMovePiece, specializeMove,
         kingMove, generalizeMove, capture, nonCapture, moveMayCapture, pawnMove, moveEnd,
         pawnDoubleMove, pawnCapture, pawnEP, rawTake, rawMove, queenMove, rookMove, bishopMove, knightMove, castlingMove,
         putTile, winRule, sendWin, disconnect, winClose, sendSelection,
-        promotionCheck, promotionPrompt, promote1, drawSelection, sendTile, connectSendStatus, nextTurnSendStatus
+        promotionCheck, promotionPrompt, promote1, drawSelection, sendTile, connectSendStatus, nextTurnSendStatus,
+        sendAvailableMoves chess, clearAvailableMoves
     ]
 
 chessInput :: IO ChessEvent
@@ -121,7 +122,7 @@ chessApp connRef refGames pending = do
         withTMVarIO connRef (return . M.insert ident conn)
         withTMVarIO st (return . over connections (M.insert colour ident))
 
-        withTMVarIO st (`runner` [PlayerConnected colour])
+        withTMVarIO st (`runner` [Event $ PlayerConnected colour])
 
         _ <- runMaybeT $ forever $ do
             isRunning <- view running <$> liftIO (atomically $ readTMVar st)
@@ -133,13 +134,13 @@ chessApp connRef refGames pending = do
 
             case maybeMsg of
                 Nothing  -> do
-                    lift $ withTMVarIO st (`runner` [PlayerDisconnected colour])
+                    lift $ withTMVarIO st (`runner` [Event $ PlayerDisconnected colour])
                     hoistMaybe Nothing
                 Just msg -> do
                     let maybeEvent = decode (fromDataMessage msg) >>= interpretMessage colour
 
                     whenJust maybeEvent $ \ ev -> do
-                        lift $ withTMVarIO st (`runner` [ev])
+                        lift $ withTMVarIO st (`runner` [Event ev])
 
         withTMVarIO connRef (return . M.delete ident)
             where
@@ -148,7 +149,7 @@ chessApp connRef refGames pending = do
 roomRule :: TMVar (M.Map String (TMVar ChessState)) -> String -> Chess
 roomRule refGames room e = case e of
     CloseRoom -> do
-        liftIO $ withTMVarIO refGames (return . M.delete room)
+        effect $ withTMVarIO refGames (return . M.delete room)
         running .= False
     _         -> return ()
 
@@ -180,7 +181,7 @@ chessGame = runGame chessRunner chessInput chessInitial
 testPromotion :: IO ()
 testPromotion = do
     let targetBoard = fromRight undefined $ parseFEN "2R5/3P4/8/8/8/4kp2/P7/5K2"
-    newState <- chessRunner (chessInitial { _board = targetBoard })
+    newState <- chessRunner (chessInitial { _board = targetBoard }) $ map Event
         [ PrintBoard
         , Touch White (3, 1), Touch White (3, 0), Promote White "Q"
         , Touch Black (4, 5), Touch Black (3, 5)
@@ -198,9 +199,8 @@ testPromotion = do
 
 testQueen :: IO ()
 testQueen = do
-    _ <- chessRunner chessInitial
+    _ <- chessRunner chessInitial $ map Event
         [ Touch White (4, 6), Touch White (4, 4)
         , Touch Black (0, 1), Touch Black (0, 2)
         , Touch White (3, 7), Touch White (7, 3)] 
-
     return ()

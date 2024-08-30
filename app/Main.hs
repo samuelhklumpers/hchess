@@ -12,6 +12,7 @@ import GHC.Generics
 import Data.Aeson
 import System.FilePath
 import System.Directory
+import WaiAppStatic.Types (MaxAge(..))
 
 
 cfgFileName :: FilePath
@@ -42,5 +43,6 @@ main = do
     case maybeCfg of 
         Nothing  -> return ()
         Just cfg -> do
-            _ <- forkIO $ W.run (http_port cfg) (staticApp (defaultFileServerSettings $ data_dir cfg))
+            let settings = defaultFileServerSettings (data_dir cfg)
+            _ <- forkIO $ W.run (http_port cfg) (staticApp $ settings { ssMaxAge = NoCache })
             chessServer (game_port cfg)
