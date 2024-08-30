@@ -60,7 +60,7 @@ function process(effect, args) {
             let [j, i] = args;
 
             let cell = overlay[i][j]; // so realistically this should use a different overlay now
-            cell.innerHTML = "x";
+            cell.classList.add("legal-move");
 
             break;
         }

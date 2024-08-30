@@ -24,38 +24,49 @@ html {
   position: relative;
 }
 
-#overlay {
-  pointer-events: none;
-}
-
 #status {
   font-weight: bold;
   font-size: 2rem;
 }
 
-#playfield {
+#overlay {
+  pointer-events: none;
+  position: absolute;
+}
+
+#playfield, #overlay {
   display: flex;
   flex-direction: column;
   height: 100%;
   width: 100%;
 }
-#playfield .chess-row {
+#playfield .chess-row, #overlay .chess-row {
   height: 12.5%;
 }
-#playfield .chess-row .col {
+#playfield .chess-row .col, #overlay .chess-row .col {
+  position: relative;
   width: 12.5%;
   justify-content: center;
   align-items: center;
 }
-#playfield .chess-row .col.whitetile {
+#playfield .chess-row .col.legal-move::after, #overlay .chess-row .col.legal-move::after {
+  position: absolute;
+  border-radius: 50%;
+  background-color: rgba(0, 0, 0, 0.2);
+  width: 30%;
+  height: 30%;
+  content: "";
+  z-index: 5;
+}
+#playfield .chess-row .col.whitetile, #overlay .chess-row .col.whitetile {
   outline: 1px solid black;
   background-color: #eeb772;
 }
-#playfield .chess-row .col.blacktile {
+#playfield .chess-row .col.blacktile, #overlay .chess-row .col.blacktile {
   outline: 1px solid black;
   background-color: chocolate;
 }
-#playfield .chess-row .col > .square {
+#playfield .chess-row .col > .square, #overlay .chess-row .col > .square {
   height: 90%;
   width: 90%;
 }

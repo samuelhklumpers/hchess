@@ -8,7 +8,7 @@
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "sass": "sass --watch web/gamestyle.scss web/gamestyle.css"
+    "sass": "sass --watch data/gamestyle.scss data/gamestyle.css"
   },
   "author": "",
   "license": "ISC"
