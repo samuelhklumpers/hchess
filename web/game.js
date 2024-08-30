@@ -187,25 +187,33 @@ function createBoard(n, m) {
     }
 
     for (let i = 0; i < n; i++) {
-        let row = displayfield.insertRow(i);
-        let orow = overfield.insertRow(i);
+        let row = document.createElement("div");
+        row.classList.add("row");
+        row.classList.add("chess-row");
+        displayfield.appendChild(row);
+        // let row = displayfield.insertRow(i);
+        // let orow = overfield.insertRow(i);
         playfield.push([]);
-        overlay.push([]);
+        // overlay.push([]);
         for (let j = 0; j < m; j++) {
-            let cell = row.insertCell(j);
-            let ocell = orow.insertCell(j);
+            // let cell = row.insertCell(j);
+            let cell = document.createElement("div");
+            cell.classList.add("col");
+
+            row.appendChild(cell);
+            // let ocell = orow.insertCell(j);
 
 
             if ((i + j) % 2 === 1)
-                cell.className += " whitetile";
+                cell.classList.add("whitetile");
             else
-                cell.className += " blacktile";
+                cell.classList.add("blacktile");
 
             cell.onclick = function (_) {
                 socket.send(aesonEncode([j, i], "TouchMsg"));
             };
 
-            overlay[i].push(ocell);
+            // overlay[i].push(ocell);
             playfield[i].push(cell);
         }
     }
