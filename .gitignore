@@ -1,3 +1,6 @@
+#
+chess_server.json
+
 # Cabal and GHC build artefacts
 dist/
 dist-newstyle/

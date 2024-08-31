@@ -8,9 +8,8 @@ import qualified Data.Bimap as B
 
 import Data.Maybe (isNothing, isJust, mapMaybe, fromJust)
 import Control.Monad.Trans.State.Lazy ( get )
-import Control.Lens ( use, (%=), (.=), at, (^.), (?=) )
-import Control.Monad (when, forM_)
-import Control.Monad.IO.Class (liftIO)
+import Control.Lens ( use, (%=), (.=), at, (^.), (?=), to )
+import Control.Monad (when, forM_, unless, forM)
 import Data.List (intercalate, uncons)
 import Data.Char (toLower)
 import Network.WebSockets
@@ -24,6 +23,8 @@ import Control.Concurrent.STM
 import Chess.Game
 import Control.Monad.Trans.Except (runExceptT, throwE)
 import Control.Monad.Trans.Class (lift)
+import Data.Bifunctor (first)
+import GHC.Natural (Natural)
 
 
 -- * Rules
@@ -79,8 +80,8 @@ connectSendStatus (PlayerConnected p) = do
     currentTurn <- use turn
     currentToMove <- use toMove
 
-    case currentTurn of 
-        Normal _      -> cause $ SendRaw p $ Status ("It's " ++ show (fromJust currentToMove) ++ "'s turn") 
+    case currentTurn of
+        Normal _      -> cause $ SendRaw p $ Status ("It's " ++ show (fromJust currentToMove) ++ "'s turn")
         Promoting _ c -> cause $ SendRaw p $ Status ("It's " ++ show c ++ "'s turn")
 connectSendStatus _ = return ()
 
@@ -90,8 +91,8 @@ nextTurnSendStatus NextTurn = do
     currentToMove <- use toMove
 
     forM_ [White, Black] $ \ p ->
-        case currentTurn of 
-            Normal _      -> cause $ SendRaw p $ Status ("It's " ++ show (fromJust currentToMove) ++ "'s turn") 
+        case currentTurn of
+            Normal _      -> cause $ SendRaw p $ Status ("It's " ++ show (fromJust currentToMove) ++ "'s turn")
             Promoting _ c -> cause $ SendRaw p $ Status ("It's " ++ show c ++ "'s turn")
 nextTurnSendStatus _ = return ()
 
@@ -125,6 +126,27 @@ touch1Colour (Touch1Piece c p x) = do
     when (snd p == c) $ touch %= M.insert c (x, p)
 touch1Colour _ = return ()
 
+touch2Unchecked :: Chess
+touch2Unchecked (Touch2 p x y) = do
+    cause $ UncheckedMovePiece p x y
+touch2Unchecked _ = return ()
+
+moveTurn :: Chess
+moveTurn (UncheckedMovePiece p x y) = do
+    let c = snd p
+    currentToMove <- use toMove
+    when (currentToMove == Just c) $ cause $ UncheckedMoveTurn p x y
+moveTurn _ = return ()
+
+noSelfCapture :: Chess
+noSelfCapture (UncheckedMoveTurn p x y) = do
+    target <- M.lookup y <$> use board
+    case target of
+        Nothing -> cause $ UncheckedMoveSelf p x y
+        Just p' -> when (snd p' /= snd p) $ cause $ UncheckedMoveSelf p x y
+noSelfCapture _ = return ()
+
+{-
 touch2Colour :: Chess
 touch2Colour (Touch2 p x y) = do
     target <- M.lookup y <$> use board
@@ -132,6 +154,7 @@ touch2Colour (Touch2 p x y) = do
         Nothing -> cause $ UncheckedMove x y
         Just p' -> when (snd p' /= snd p) $ cause $ UncheckedMove x y
 touch2Colour _ = return ()
+-}
 
 moveMayCapture :: Chess
 moveMayCapture (Move p x y) = do
@@ -172,6 +195,9 @@ winRule MoveEnd = do
 winRule _ = return ()
 
 sendWin :: Chess
+sendWin Draw = do
+    cause $ SendRaw White $ Status "Draw"
+    cause $ SendRaw Black $ Status "Draw"
 sendWin (Win c) = do
     let c' = if c == White then Black else White
 
@@ -179,16 +205,44 @@ sendWin (Win c) = do
     cause $ SendRaw c' $ Status "You lose :("
 sendWin _ = return ()
 
+isMove :: ChessEvent -> Bool
+isMove (Move {}) = True
+isMove _ = False
+
+isWin :: ChessEvent -> Bool
+isWin (Win {}) = True
+isWin _ = False
+
+sendAvailableMoves :: Chess -> Chess
+sendAvailableMoves g (UpdateSelection c _) = do -- PS: you might not want to cause UpdateSelection in your simulation
+    maybeSelected <- use $ touch . at c
+    currentState <- get
+    whenJust maybeSelected $ \ (a , _) ->
+        forM_ [(i, j) | i <- [0..7], j <- [0..7]] $ \ b -> do
+            let (_ , r) = simulateUntil isMove g currentState [UncheckedMove a b]
+            unless (null r) $ cause $ SendMarkAvailableMove c b
+sendAvailableMoves _ _ = return ()
+
+
+clearAvailableMoves :: Chess
+clearAvailableMoves (UpdateSelection c _) = do
+    maybeSelected <- use $ touch . at c
+    case maybeSelected of
+        Nothing -> cause $ SendClearAvailableMoves c
+        Just _  -> return ()
+clearAvailableMoves _ = return ()
+
+
 serverRule :: TMVar (M.Map PlayerId Connection) -> Chess
 serverRule connRef e = do
     case e of
         (PlayerConnected c) -> do
             cause $ SendBoard c
         (SendDrawTile c a p s)  -> do
-            cause $ SendRaw c $ Tile (screenTransform c a) p s
+            cause $ SendRaw c $ Tile (screenTransform c a) (first pieceImage <$> p) s
         (SendBoard c)   -> do
             currentBoard <- use board
-            cause $ SendRaw c $ Board (M.mapKeys (screenTransform c) currentBoard)
+            cause $ SendRaw c $ Board (M.mapKeys (screenTransform c) $ M.map (first pieceImage) currentBoard)
         SendBoardAll    -> do
             cause $ SendBoard White
             cause $ SendBoard Black
@@ -200,14 +254,17 @@ serverRule connRef e = do
             cause $ SendRaw Black $ Turn c
         (SendPromotionPrompt c) -> do
             cause $ SendRaw c Promotion
-        --(SendSelect c x s) -> do
-        --    cause $ SendRaw c $ SelectTile x s
+        (SendMarkAvailableMove c a) -> do
+            cause $ SendRaw c (MarkAvailableMove (screenTransform c a))
+        (SendClearAvailableMoves c) -> do
+            cause $ SendRaw c ClearAvailableMoves
         (SendRaw c d)   -> do
-            conns <- liftIO $ atomically $ readTMVar connRef
             connMap <- use connections
+            effect $ do
+                conns <- atomically $ readTMVar connRef
 
-            whenJust (M.lookup c connMap >>= \ x -> M.lookup x conns) $ \ conn -> do
-                liftIO $ sendBinaryData conn $ encode d
+                whenJust (M.lookup c connMap >>= \ x -> M.lookup x conns) $ \ conn -> do
+                    sendBinaryData conn $ encode d
         _               -> return ()
 
 
@@ -217,6 +274,7 @@ rawMove (RawMove p x y) = do
     cause $ PutTile x Nothing
 rawMove _ = return ()
 
+-- kind of dead end, but useful for simulation
 uncheckedMovePiece :: Chess
 uncheckedMovePiece (UncheckedMove x y) = do
     currentBoard <- use board
@@ -225,7 +283,7 @@ uncheckedMovePiece (UncheckedMove x y) = do
 uncheckedMovePiece _ = return ()
 
 specializeMove :: Chess
-specializeMove (UncheckedMovePiece p x y) = do
+specializeMove (UncheckedMoveSelf p x y) = do
     target <- use $ board . at y
     cause $ UncheckedMoveType p (fst p) target x y
 specializeMove _ = return ()
@@ -256,7 +314,9 @@ castlingMove (UncheckedMoveType p K _ a@(ax , ay) b@(bx , by)) = do
         let c = if ax < bx then (bx + 1 , ay) else (bx - 2 , ay)
         let d = if ax < bx then (bx - 1 , ay) else (bx + 1 , ay)
 
-        when (c `S.member` castle && a `S.member` castle && rookP s c d) $ do
+        let pathOk = pathIsEmpty s $ (, ay) <$> enumFromToL' (fst c) (fst d)
+
+        when (c `S.member` castle && a `S.member` castle && pathOk) $ do
             rookMaybe <- use $ board . at c
             castling %= S.delete c
 
@@ -267,17 +327,26 @@ castlingMove (UncheckedMoveType p K _ a@(ax , ay) b@(bx , by)) = do
                 cause $ CheckedMovePiece p a b
 castlingMove _ = return ()
 
-enumFromToLR' :: (Enum a, Ord a) => a -> a -> [a]
-enumFromToLR' x y
-    | x < y = enumFromTo x y
-    | otherwise = reverse $ enumFromTo y x
-
 enumFromTo' :: (Enum a, Ord a, Num a) => a -> a -> [a]
-enumFromTo' x y 
+enumFromTo' x y
     | x < y = out
     | otherwise = reverse out
     where
     out = enumFromTo (min x y + 1) (max x y - 1)
+
+enumFromToLR' :: (Enum a, Ord a) => a -> a -> [a]
+enumFromToLR' x y
+    | x < y = out
+    | otherwise = reverse out
+    where
+    out = enumFromTo (min x y) (max x y)
+
+enumFromToL' :: (Enum a, Ord a) => a -> a -> [a]
+enumFromToL' x y
+    | x < y = drop 1 out
+    | otherwise = drop 1 $ reverse out
+    where
+    out = enumFromTo (min x y) (max x y)
 
 rookPath :: Square -> Square -> [[Square]]
 rookPath (ax, ay) (bx, by)
@@ -392,6 +461,38 @@ pawnEP (UncheckedMoveType p P _ x y)  = do
             cause $ CheckedMovePiece p x y
 pawnEP _ = return ()
 
+pawnZero :: Chess
+pawnZero (CheckedMovePiece (P , _) _ _) = cause Zeroing
+pawnZero _ = return ()
+
+captureZero :: Chess
+captureZero (Capture {}) = cause Zeroing
+captureZero _ = return ()
+
+zeroRule :: Chess
+zeroRule Zeroing = do
+    currentTurn <- use $ turn . to moveNumber
+    zeroing .= currentTurn
+zeroRule _ = return ()
+
+nMoveRule :: Natural -> Chess
+nMoveRule n MoveEnd = do
+    currentTurn <- use $ turn . to moveNumber
+    when (currentTurn >= fromIntegral n) $ cause Draw 
+nMoveRule _ _ = return ()
+
+nFoldRepetition :: Natural -> Chess
+nFoldRepetition n MoveEnd = do
+    currentBoard <- use board
+    currentHistory <- use history
+    
+    let k = maybe 1 (+1) (M.lookup currentBoard currentHistory) 
+
+    history . at currentBoard ?= k
+
+    when (k >= fromIntegral n) $ cause Draw
+nFoldRepetition _ _ = return ()
+
 promotion :: Chess
 promotion _ = return () -- stop MoveEnd from advancing the turn and wait
 
@@ -408,7 +509,7 @@ generalizeMove _ = return ()
 
 logEvent :: Chess
 logEvent PrintBoard = return ()
-logEvent e = liftIO $ print e
+logEvent e = effect $ print e
 
 squares :: [[Square]]
 squares = (\y -> (,y) <$> [0..7]) <$> [0..7]
@@ -467,17 +568,17 @@ promote1 (Promote c str) = do
     currentTurn <- use turn
 
     r <- runExceptT $ do
-        case currentTurn of 
+        case currentTurn of
             Promoting _ c' -> do
                 currentPromotion <- lift $ use promoting
                 let x = (,) <$> B.lookupR str pieceStr <*> currentPromotion
-                --liftIO $ print $ (B.lookupR str pieceStr :: Maybe PieceType, currentPromotion)
+                --effect $ print $ (B.lookupR str pieceStr :: Maybe PieceType, currentPromotion)
                 whenJust x $ \ (pt , (a , _)) -> do
                     when (pt `elem` promotable && c == c') $ do
                         lift $ board . at a ?= (pt , c)
                         throwE ()
             _ -> return ()
-    
+
     case r of
         Left ()  -> do
             promoting .= Nothing
@@ -487,7 +588,7 @@ promote1 (Promote c str) = do
 promote1 _ = return ()
 
 printBoard :: Chess
-printBoard PrintBoard = use board >>= liftIO . putStrLn . ppBoard >> liftIO (putStrLn "")
+printBoard PrintBoard = use board >>= effect . putStrLn . ppBoard >> effect (putStrLn "")
 printBoard _ = return ()
 
 disconnect :: Chess
@@ -500,4 +601,5 @@ disconnect _ = return ()
 
 winClose :: Chess
 winClose (Win _) = cause CloseRoom
+winClose Draw = cause CloseRoom
 winClose _ = return ()

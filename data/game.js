@@ -15,21 +15,37 @@ let dr = 80;
 
 
 function toHTML(html) {
-  let temp = document.createElement('template');
-  html = html.trim();
-  temp.innerHTML = html;
-  return temp.content.firstChild;
+    let temp = document.createElement('template');
+    html = html.trim();
+    temp.innerHTML = html;
+    return temp.content.firstChild;
 }
 
+function draw_and_cache(shape, ix, colour) {
+    let im = imageCache[shape];
 
-function draw_svg(ix, raw, col) {
+    if (im) {
+        draw_svg(ix, im.cloneNode(true), colour)
+        return Promise.resolve();
+    }
+    else {
+        return fetch("/images/" + shape).then(response => response.text()).then(raw => draw_and_cache_(shape, ix, raw, colour));
+    }
+}
+
+function draw_and_cache_(shape, ix, raw, col) {
+    im = toHTML(raw);
+    im.setAttribute("class", "square");
+    imageCache[shape] = im
+    draw_svg(ix, im.cloneNode(true), col);
+}
+
+function draw_svg(ix, im, col) {
     let [i, j] = ix;
     let cell = playfield[i][j];
-    let im = toHTML(raw);
-
-    im.setAttribute("class", "square");
+    
     im.setAttribute("fill", col);
-
+    
     cell.innerHTML = "";
     cell.appendChild(im);
 }
@@ -38,24 +54,44 @@ function draw_svg(ix, raw, col) {
 function draw_text(cell, shape, colour) {
     cell.innerHTML = "";
     cell.innerHTML = shape;
-
+    
     cell.style.color = colour;
-
+    
     let children = cell.children;
-
+    
     if (children.length > 1)
     {
         cell.removeChild(children[0]);
     }
 }
-
+    
 
 let processWaitlist = Promise.resolve(0);
+
+imageCache = {};
 
 function process(effect, args) {
     console.log(effect, args);
 
     switch (effect) {
+        case "MarkAvailableMove": {
+            let [j, i] = args;
+
+            let cell = overlay[i][j]; // so realistically this should use a different overlay now
+            cell.classList.add("legal-move");
+
+            break;
+        }
+        case "ClearAvailableMoves": {
+            for (let i = 0; i < 8; ++i) {
+                for (let j = 0; j < 8; ++j) {
+                    let cell = overlay[i][j];
+                    cell.classList.remove("legal-move");
+                }
+            }
+
+            break;
+        }
         case "Tile": {
             let [[j, i], piece, colour] = args;
         
@@ -68,8 +104,7 @@ function process(effect, args) {
             let cell = playfield[i][j];
             
             if (shape.endsWith(".svg")) {
-                let draw_callback = _ => fetch("/chess/images/" + shape).then(response => response.text()).then(raw => draw_svg([i, j], raw, colour));
-                processWaitlist = processWaitlist.then(draw_callback);
+                processWaitlist.then(_ => draw_and_cache(shape, [i, j], colour));
             }
             else {
                 let draw_callback = _ => draw_text(cell, shape, colour);
@@ -78,20 +113,22 @@ function process(effect, args) {
             break;
         }
         case "Board": {
+            let promises = [];
+
             for (const tile of args) {
                 let [[j, i], [shape, colour]] = tile;
                 shape = shape ? shape : "";
                 let cell = playfield[i][j];
-                
+            
                 if (shape.endsWith(".svg")) {
-                    let draw_callback = _ => fetch("/chess/images/" + shape).then(response => response.text()).then(raw => draw_svg([i, j], raw, colour));
-                    processWaitlist = processWaitlist.then(draw_callback);
+                    promises.push(draw_and_cache(shape, [i, j], colour));
                 }
                 else {
                     let draw_callback = _ => draw_text(cell, shape, colour);
                     processWaitlist = processWaitlist.then(draw_callback);
                 }
             }
+            Promise.all(promises);
             break;
         }
         case "config": {
@@ -148,7 +185,7 @@ socket.onmessage = function (event) {
     }
     msg.text().then(f);
 };
-
+    
 socket.onopen = function (_) {
     socket.send(aesonEncode([room, user], "Register"));
 };
@@ -165,41 +202,37 @@ function aesonEncode(contents, tag) {
 
 
 function createBoard(n, m) {
-    let stylelink = document.querySelector("#stylesheet");
-    let sheet = stylelink.sheet;
-    let rules = sheet.rules;
-
-    width = 80 / m;
-    height = 80 / n;
-    dr = Math.floor(Math.min(width, height));
-
-    for (let i = 0; i < rules.length; ++i)
-    {
-        let rule = rules[i];
-        if (rule.selectorText === "tr")
-        {
-            rule.style.height = dr.toString() + "vh";
-        }
-        else if (rule.selectorText === "td")
-        {
-            rule.style.width = dr.toString() + "vh";
-        }
-    }
-
+    //let stylelink = document.querySelector("#stylesheet");
+    //let sheet = stylelink.sheet;
+    //let rules = sheet.rules;
+    
     for (let i = 0; i < n; i++) {
-        let row = displayfield.insertRow(i);
-        let orow = overfield.insertRow(i);
+        let row = document.createElement("div");
+        row.classList.add("row");
+        row.classList.add("chess-row");
+        displayfield.appendChild(row);
+
+        let orow = document.createElement("div");
+        orow.classList.add("row");
+        orow.classList.add("chess-row");
+        overfield.appendChild(orow);
+
         playfield.push([]);
         overlay.push([]);
         for (let j = 0; j < m; j++) {
-            let cell = row.insertCell(j);
-            let ocell = orow.insertCell(j);
+            let cell = document.createElement("div");
+            cell.classList.add("col");
+            row.appendChild(cell);
+            
+            let ocell = document.createElement("div");
+            ocell.classList.add("col");
+            orow.appendChild(ocell);
 
 
             if ((i + j) % 2 === 1)
-                cell.className += " whitetile";
+                cell.classList.add("whitetile");
             else
-                cell.className += " blacktile";
+                cell.classList.add("blacktile");
 
             cell.onclick = function (_) {
                 socket.send(aesonEncode([j, i], "TouchMsg"));

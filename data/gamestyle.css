@@ -1,0 +1,100 @@
+body {
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+  text-align: center;
+  font-family: "Roboto", sans-serif;
+  width: 100%;
+  height: 100vh;
+}
+
+html {
+  font-size: 16px;
+}
+
+#top {
+  margin: 0.5rem;
+}
+
+#field-container {
+  aspect-ratio: 1/1;
+  max-height: 80%;
+  max-width: 90%;
+  margin: auto;
+  position: relative;
+}
+
+#status {
+  font-weight: bold;
+  font-size: 2rem;
+}
+
+#overlay {
+  pointer-events: none;
+  position: absolute;
+}
+
+#playfield, #overlay {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+}
+#playfield .chess-row, #overlay .chess-row {
+  height: 12.5%;
+}
+#playfield .chess-row .col, #overlay .chess-row .col {
+  position: relative;
+  width: 12.5%;
+  justify-content: center;
+  align-items: center;
+}
+#playfield .chess-row .col.legal-move::after, #overlay .chess-row .col.legal-move::after {
+  position: absolute;
+  border-radius: 50%;
+  background-color: rgba(0, 0, 0, 0.2);
+  width: 30%;
+  height: 30%;
+  content: "";
+  z-index: 5;
+}
+#playfield .chess-row .col.whitetile, #overlay .chess-row .col.whitetile {
+  outline: 1px solid black;
+  background-color: #eeb772;
+}
+#playfield .chess-row .col.blacktile, #overlay .chess-row .col.blacktile {
+  outline: 1px solid black;
+  background-color: chocolate;
+}
+#playfield .chess-row .col > .square, #overlay .chess-row .col > .square {
+  height: 90%;
+  width: 90%;
+}
+
+.row {
+  display: flex;
+  flex-direction: row;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+}
+
+@media only screen and (max-width: 992px) {
+  html {
+    font-size: 15px;
+  }
+}
+@media only screen and (max-width: 768px) {
+  html {
+    font-size: 14px;
+  }
+}
+@media only screen and (max-width: 600px) {
+  html {
+    font-size: 12px;
+  }
+}
+
+/*# sourceMappingURL=gamestyle.css.map */

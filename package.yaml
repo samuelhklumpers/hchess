@@ -59,6 +59,11 @@ executables:
     - -with-rtsopts=-N
     dependencies:
     - hchess
+    - warp
+    - wai-app-static
+    - filepath
+    - aeson
+    - directory
 
 tests:
   hchess-test:

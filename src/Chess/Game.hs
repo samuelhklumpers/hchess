@@ -16,9 +16,9 @@ import Text.Parsec
       Parsec, ParseError )
 
 import Data.Either ( fromRight )
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, mapMaybe)
 import Control.Monad.Trans.State.Lazy ( StateT(runStateT) )
-import Control.Monad.Trans.Writer.Lazy ( tell, WriterT (runWriterT) )
+import Control.Monad.Trans.Writer.Lazy ( tell, Writer, runWriter )
 import Control.Lens ( makeLenses, Getter, to )
 import Control.Monad.Trans.Class ( MonadTrans(..) )
 import Control.Monad (forM_)
@@ -27,13 +27,20 @@ import Data.Aeson (ToJSON, FromJSON)
 import qualified Data.Bimap as B
 
 
-cause :: (MonadTrans t) => a -> t (WriterT [a] IO) ()
-cause = lift . tell . (:[])
+-- What does this do?
+-- > IO cannot influence the game! (IO must come from the driver)
+data Action e = Event e | Effect (IO ())
+
+cause :: (MonadTrans t) => a -> t (Writer [Action a]) ()
+cause = lift . tell . (:[]) . Event
+
+effect :: (MonadTrans t) => IO () -> t (Writer [Action a]) ()
+effect = lift . tell . (:[]) . Effect
 
 whenJust :: Monad m => Maybe a -> (a -> m ()) -> m ()
 whenJust = forM_
 
-type Game s e = e -> StateT s (WriterT [e] IO) ()
+type Game s e = e -> StateT s (Writer [Action e]) ()
 
 combine :: Game s e -> Game s e -> Game s e
 combine f g e = f e >> g e
@@ -62,6 +69,14 @@ instance FromJSON PieceType where
 
 data Turn = Normal Int | Promoting Int Colour deriving (Show, Eq)
 
+pieceImage :: PieceType -> String
+pieceImage K = "king.svg"
+pieceImage Q = "queen.svg"
+pieceImage R = "rook.svg"
+pieceImage B = "bishop.svg"
+pieceImage N = "knight.svg"
+pieceImage P = "pawn.svg"
+
 moveNumber :: Turn -> Int
 moveNumber (Normal n) = n
 moveNumber (Promoting n _) = n
@@ -69,7 +84,7 @@ moveNumber (Promoting n _) = n
 type ChessBoard = M.Map Square Piece
 data ChessState = ChessState
     { _board :: ChessBoard , _turn :: Turn, _castling :: S.Set Square
-    , _enpassant :: Maybe (Int, Square, Square) , _zeroing :: Int
+    , _enpassant :: Maybe (Int, Square, Square) , _zeroing :: Int , _history :: M.Map ChessBoard Int
     , _touch :: M.Map Colour (Square, Piece) , _players :: B.Bimap String Colour
     , _promoting :: Maybe (Square, Piece)
     , _connections :: M.Map Colour PlayerId , _running :: Bool } deriving (Show, Eq)
@@ -84,6 +99,7 @@ chessInitial = ChessState {
         _enpassant   = Nothing,
         _touch       = M.empty,
         _zeroing     = 0,
+        _history     = M.empty,
         _players     = B.empty,
         _promoting   = Nothing,
         _connections = M.empty,
@@ -164,24 +180,64 @@ parseFEN = runParser fenParser (0 , 0) ""
 -- * Evaluation
 recGame :: Game s e -> Runner s e
 recGame _ s [] = return s
-recGame g s (e : es) = do
-    ((_ , s') , es') <- runWriterT (runStateT (g e) s)
-    s'' <- recGame g s' es'
-    recGame g s'' es
+recGame g s (a : es) = case a of 
+    Event e -> do
+        let ((_ , s') , es') = runWriter (runStateT (g e) s)
+        s'' <- recGame g s' es'
+        recGame g s'' es
+    Effect e -> do
+        e 
+        recGame g s es
 
+fromEvent :: Action e -> Maybe e
+fromEvent (Event e) = Just e
+fromEvent _ = Nothing
 
-type Runner s e = s -> [e] -> IO s
+simulate :: Game s e -> s -> [e] -> s
+simulate _ s [] = s
+simulate g s (e : queue') =
+        let ((_ , s') , consequences) = runWriter (runStateT (g e) s) in
+        let s'' = simulate g s' (mapMaybe fromEvent consequences) in
+        simulate g s'' queue'
+
+simulateUntil :: (e -> Bool) -> Game s e -> s -> [e] -> (s , [e])
+simulateUntil _ _ s [] = (s , [])
+simulateUntil p g s queue@(e : queue')
+    | p e       = (s , queue)
+    | otherwise = 
+        let ((_ , s') , consequences) = runWriter (runStateT (g e) s) in
+        let (s'', remainder) = simulateUntil p g s' (mapMaybe fromEvent consequences) in
+        if null remainder then
+            simulateUntil p g s'' queue'
+        else
+            (s'' , remainder ++ queue')
+{-
+simulateUntilDbg :: Show e => (e -> Bool) -> Game s e -> s -> [e] -> IO (s , [e])
+simulateUntilDbg _ _ s [] = return  (s , [])
+simulateUntilDbg p g s queue@(e : queue')
+    | p e       = print e >> return (s , queue)
+    | otherwise = do
+        print e
+        let ((_ , s') , consequences) = runWriter (runStateT (g e) s)
+        (s'', remainder) <- simulateUntilDbg p g s' (mapMaybe fromEvent consequences)
+        if null remainder then
+            simulateUntilDbg p g s'' queue'
+        else
+            return (s'' , remainder ++ queue')
+-}
+
+type Runner s e = s -> [Action e] -> IO s
 
 runGame :: Runner s e -> IO e -> s -> IO s
 runGame runner input s = do
     e <- input
-    s' <- runner s [e]
+    s' <- runner s [Event e]
     runGame runner input s'
 
 
 
-data ChessOutMessage = Board ChessBoard | Tile Square (Maybe Piece) String | Turn Colour
-    | Status String | Promotion deriving (Show, Eq, Generic)
+data ChessOutMessage = Board (M.Map Square (String , Colour)) | Tile Square (Maybe (String , Colour)) String | Turn Colour
+    | Status String | Promotion | MarkAvailableMove Square | ClearAvailableMoves deriving (Show, Eq, Generic)
 
 instance ToJSON ChessOutMessage where
 instance FromJSON ChessOutMessage where
@@ -194,10 +250,11 @@ data ChessEvent = UncheckedMove Square Square | UncheckedMovePiece Piece Square 
     | NonCapture Piece Square Square | Set Square Piece | PrintBoard
     | TimedOut Colour | PlayerConnected Colour
     | SendBoard Colour | SendTile Colour Square | SendDrawTile Colour Square (Maybe Piece) String | SendBoardAll | SendTileAll Square | PutTile Square (Maybe Piece)
-    | SendSelect Colour Square Bool | NextSubTurn
-    | SendTurn Colour | SendRaw Colour ChessOutMessage | MoveEnd | Win Colour | PlayerDisconnected Colour
+    | SendSelect Colour Square Bool | NextSubTurn | Zeroing
+    | SendTurn Colour | SendRaw Colour ChessOutMessage | MoveEnd | Win Colour | Draw | PlayerDisconnected Colour
     | CloseRoom | UpdateSelection Colour Square | SendPromotionPrompt Colour | Promote Colour String
-    | NextTurn deriving Show
+    | NextTurn | SendMarkAvailableMove Colour Square | SendClearAvailableMoves Colour 
+    | UncheckedMoveSelf Piece Square Square | UncheckedMoveTurn Piece Square Square deriving Show
 
 
 
