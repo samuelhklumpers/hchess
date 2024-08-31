@@ -21,13 +21,29 @@ function toHTML(html) {
     return temp.content.firstChild;
 }
 
+function draw_and_cache(shape, ix, colour) {
+    let im = imageCache[shape];
 
-function draw_svg(ix, raw, col) {
+    if (im) {
+        draw_svg(ix, im.cloneNode(true), colour)
+        return Promise.resolve();
+    }
+    else {
+        return fetch("/images/" + shape).then(response => response.text()).then(raw => draw_and_cache_(shape, ix, raw, colour));
+    }
+}
+
+function draw_and_cache_(shape, ix, raw, col) {
+    im = toHTML(raw);
+    im.setAttribute("class", "square");
+    imageCache[shape] = im
+    draw_svg(ix, im.cloneNode(true), col);
+}
+
+function draw_svg(ix, im, col) {
     let [i, j] = ix;
     let cell = playfield[i][j];
-    let im = toHTML(raw);
     
-    im.setAttribute("class", "square");
     im.setAttribute("fill", col);
     
     cell.innerHTML = "";
@@ -51,6 +67,8 @@ function draw_text(cell, shape, colour) {
     
 
 let processWaitlist = Promise.resolve(0);
+
+imageCache = {};
 
 function process(effect, args) {
     console.log(effect, args);
@@ -86,8 +104,7 @@ function process(effect, args) {
             let cell = playfield[i][j];
             
             if (shape.endsWith(".svg")) {
-                let draw_callback = _ => fetch("/images/" + shape).then(response => response.text()).then(raw => draw_svg([i, j], raw, colour));
-                processWaitlist = processWaitlist.then(draw_callback);
+                processWaitlist.then(_ => draw_and_cache(shape, [i, j], colour));
             }
             else {
                 let draw_callback = _ => draw_text(cell, shape, colour);
@@ -96,20 +113,22 @@ function process(effect, args) {
             break;
         }
         case "Board": {
+            let promises = [];
+
             for (const tile of args) {
                 let [[j, i], [shape, colour]] = tile;
                 shape = shape ? shape : "";
                 let cell = playfield[i][j];
-                
+            
                 if (shape.endsWith(".svg")) {
-                    let draw_callback = _ => fetch("/images/" + shape).then(response => response.text()).then(raw => draw_svg([i, j], raw, colour));
-                    processWaitlist = processWaitlist.then(draw_callback);
+                    promises.push(draw_and_cache(shape, [i, j], colour));
                 }
                 else {
                     let draw_callback = _ => draw_text(cell, shape, colour);
                     processWaitlist = processWaitlist.then(draw_callback);
                 }
             }
+            Promise.all(promises);
             break;
         }
         case "config": {
