@@ -69,6 +69,14 @@ instance FromJSON PieceType where
 
 data Turn = Normal Int | Promoting Int Colour deriving (Show, Eq)
 
+pieceImage :: PieceType -> String
+pieceImage K = "king.svg"
+pieceImage Q = "queen.svg"
+pieceImage R = "rook.svg"
+pieceImage B = "bishop.svg"
+pieceImage N = "knight.svg"
+pieceImage P = "pawn.svg"
+
 moveNumber :: Turn -> Int
 moveNumber (Normal n) = n
 moveNumber (Promoting n _) = n
@@ -76,7 +84,7 @@ moveNumber (Promoting n _) = n
 type ChessBoard = M.Map Square Piece
 data ChessState = ChessState
     { _board :: ChessBoard , _turn :: Turn, _castling :: S.Set Square
-    , _enpassant :: Maybe (Int, Square, Square) , _zeroing :: Int
+    , _enpassant :: Maybe (Int, Square, Square) , _zeroing :: Int , _history :: M.Map ChessBoard Int
     , _touch :: M.Map Colour (Square, Piece) , _players :: B.Bimap String Colour
     , _promoting :: Maybe (Square, Piece)
     , _connections :: M.Map Colour PlayerId , _running :: Bool } deriving (Show, Eq)
@@ -91,6 +99,7 @@ chessInitial = ChessState {
         _enpassant   = Nothing,
         _touch       = M.empty,
         _zeroing     = 0,
+        _history     = M.empty,
         _players     = B.empty,
         _promoting   = Nothing,
         _connections = M.empty,
@@ -184,6 +193,13 @@ fromEvent :: Action e -> Maybe e
 fromEvent (Event e) = Just e
 fromEvent _ = Nothing
 
+simulate :: Game s e -> s -> [e] -> s
+simulate _ s [] = s
+simulate g s (e : queue') =
+        let ((_ , s') , consequences) = runWriter (runStateT (g e) s) in
+        let s'' = simulate g s' (mapMaybe fromEvent consequences) in
+        simulate g s'' queue'
+
 simulateUntil :: (e -> Bool) -> Game s e -> s -> [e] -> (s , [e])
 simulateUntil _ _ s [] = (s , [])
 simulateUntil p g s queue@(e : queue')
@@ -195,6 +211,20 @@ simulateUntil p g s queue@(e : queue')
             simulateUntil p g s'' queue'
         else
             (s'' , remainder ++ queue')
+{-
+simulateUntilDbg :: Show e => (e -> Bool) -> Game s e -> s -> [e] -> IO (s , [e])
+simulateUntilDbg _ _ s [] = return  (s , [])
+simulateUntilDbg p g s queue@(e : queue')
+    | p e       = print e >> return (s , queue)
+    | otherwise = do
+        print e
+        let ((_ , s') , consequences) = runWriter (runStateT (g e) s)
+        (s'', remainder) <- simulateUntilDbg p g s' (mapMaybe fromEvent consequences)
+        if null remainder then
+            simulateUntilDbg p g s'' queue'
+        else
+            return (s'' , remainder ++ queue')
+-}
 
 type Runner s e = s -> [Action e] -> IO s
 
@@ -206,7 +236,7 @@ runGame runner input s = do
 
 
 
-data ChessOutMessage = Board ChessBoard | Tile Square (Maybe Piece) String | Turn Colour
+data ChessOutMessage = Board (M.Map Square (String , Colour)) | Tile Square (Maybe (String , Colour)) String | Turn Colour
     | Status String | Promotion | MarkAvailableMove Square | ClearAvailableMoves deriving (Show, Eq, Generic)
 
 instance ToJSON ChessOutMessage where
@@ -220,10 +250,11 @@ data ChessEvent = UncheckedMove Square Square | UncheckedMovePiece Piece Square 
     | NonCapture Piece Square Square | Set Square Piece | PrintBoard
     | TimedOut Colour | PlayerConnected Colour
     | SendBoard Colour | SendTile Colour Square | SendDrawTile Colour Square (Maybe Piece) String | SendBoardAll | SendTileAll Square | PutTile Square (Maybe Piece)
-    | SendSelect Colour Square Bool | NextSubTurn
-    | SendTurn Colour | SendRaw Colour ChessOutMessage | MoveEnd | Win Colour | PlayerDisconnected Colour
+    | SendSelect Colour Square Bool | NextSubTurn | Zeroing
+    | SendTurn Colour | SendRaw Colour ChessOutMessage | MoveEnd | Win Colour | Draw | PlayerDisconnected Colour
     | CloseRoom | UpdateSelection Colour Square | SendPromotionPrompt Colour | Promote Colour String
-    | NextTurn | SendMarkAvailableMove Colour Square | SendClearAvailableMoves Colour deriving Show
+    | NextTurn | SendMarkAvailableMove Colour Square | SendClearAvailableMoves Colour 
+    | UncheckedMoveSelf Piece Square Square | UncheckedMoveTurn Piece Square Square deriving Show
 
 
 
