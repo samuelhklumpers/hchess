@@ -284,7 +284,9 @@ castlingMove (UncheckedMoveType p K _ a@(ax , ay) b@(bx , by)) = do
         let c = if ax < bx then (bx + 1 , ay) else (bx - 2 , ay)
         let d = if ax < bx then (bx - 1 , ay) else (bx + 1 , ay)
 
-        when (c `S.member` castle && a `S.member` castle && rookP s c d) $ do
+        let pathOk = pathIsEmpty s $ (, ay) <$> enumFromToL' (fst c) (fst d)
+
+        when (c `S.member` castle && a `S.member` castle && pathOk) $ do
             rookMaybe <- use $ board . at c
             castling %= S.delete c
 
@@ -295,17 +297,26 @@ castlingMove (UncheckedMoveType p K _ a@(ax , ay) b@(bx , by)) = do
                 cause $ CheckedMovePiece p a b
 castlingMove _ = return ()
 
-enumFromToLR' :: (Enum a, Ord a) => a -> a -> [a]
-enumFromToLR' x y
-    | x < y = enumFromTo x y
-    | otherwise = reverse $ enumFromTo y x
-
 enumFromTo' :: (Enum a, Ord a, Num a) => a -> a -> [a]
 enumFromTo' x y
     | x < y = out
     | otherwise = reverse out
     where
     out = enumFromTo (min x y + 1) (max x y - 1)
+
+enumFromToLR' :: (Enum a, Ord a) => a -> a -> [a]
+enumFromToLR' x y
+    | x < y = out
+    | otherwise = reverse out
+    where
+    out = enumFromTo (min x y) (max x y)
+
+enumFromToL' :: (Enum a, Ord a) => a -> a -> [a]
+enumFromToL' x y
+    | x < y = drop 1 out
+    | otherwise = drop 1 $ reverse out
+    where
+    out = enumFromTo (min x y) (max x y)
 
 rookPath :: Square -> Square -> [[Square]]
 rookPath (ax, ay) (bx, by)
