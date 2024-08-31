@@ -65,11 +65,10 @@ function process(effect, args) {
             break;
         }
         case "ClearAvailableMoves": {
-
             for (let i = 0; i < 8; ++i) {
                 for (let j = 0; j < 8; ++j) {
                     let cell = overlay[i][j];
-                    cell.innerHTML = "";
+                    cell.classList.remove("legal-move");
                 }
             }
 

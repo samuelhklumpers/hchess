@@ -203,6 +203,20 @@ simulateUntil p g s queue@(e : queue')
             simulateUntil p g s'' queue'
         else
             (s'' , remainder ++ queue')
+{-
+simulateUntilDbg :: Show e => (e -> Bool) -> Game s e -> s -> [e] -> IO (s , [e])
+simulateUntilDbg _ _ s [] = return  (s , [])
+simulateUntilDbg p g s queue@(e : queue')
+    | p e       = print e >> return (s , queue)
+    | otherwise = do
+        print e
+        let ((_ , s') , consequences) = runWriter (runStateT (g e) s)
+        (s'', remainder) <- simulateUntilDbg p g s' (mapMaybe fromEvent consequences)
+        if null remainder then
+            simulateUntilDbg p g s'' queue'
+        else
+            return (s'' , remainder ++ queue')
+-}
 
 type Runner s e = s -> [Action e] -> IO s
 

@@ -24,6 +24,7 @@ import Chess.Game
 import Control.Monad.Trans.Except (runExceptT, throwE)
 import Control.Monad.Trans.Class (lift)
 import Data.Bifunctor (first)
+import GHC.IO (unsafePerformIO)
 
 
 -- * Rules
@@ -189,7 +190,7 @@ sendAvailableMoves g (UpdateSelection c _) = do -- PS: you might not want to cau
     currentState <- get
     whenJust maybeSelected $ \ (a , _) ->
         forM_ [(i, j) | i <- [0..7], j <- [0..7]] $ \ b -> do
-            let (_ , r) = simulateUntil isMove g currentState [UncheckedMove a b]
+            let (_ , r) = simulateUntil isMove g currentState [Touch c b]
             unless (null r) $ cause $ SendMarkAvailableMove c b
 sendAvailableMoves _ _ = return ()
 
@@ -225,7 +226,7 @@ serverRule connRef e = do
         (SendPromotionPrompt c) -> do
             cause $ SendRaw c Promotion
         (SendMarkAvailableMove c a) -> do
-            cause $ SendRaw c (MarkAvailableMove a)
+            cause $ SendRaw c (MarkAvailableMove (screenTransform c a))
         (SendClearAvailableMoves c) -> do
             cause $ SendRaw c ClearAvailableMoves
         (SendRaw c d)   -> do
