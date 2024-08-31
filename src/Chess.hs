@@ -39,14 +39,15 @@ import Data.Either (fromRight)
 
 chess :: Game ChessState ChessEvent
 chess = compile [
-        --logEvent,
+        logEvent,
         --printBoard, movePrintBoard,
-        touch1, touch1Turn, touch1Piece, touch1Colour, touch2Colour, uncheckedMovePiece, specializeMove,
+        touch1, touch1Turn, touch1Piece, touch1Colour, touch2Unchecked, moveTurn, uncheckedMovePiece, specializeMove,
         kingMove, generalizeMove, capture, nonCapture, moveMayCapture, pawnMove, moveEnd,
         pawnDoubleMove, pawnCapture, pawnEP, rawTake, rawMove, queenMove, rookMove, bishopMove, knightMove, castlingMove,
         putTile, winRule, sendWin, disconnect, winClose, sendSelection,
         promotionCheck, promotionPrompt, promote1, drawSelection, sendTile, connectSendStatus, nextTurnSendStatus,
-        sendAvailableMoves chess, clearAvailableMoves
+        sendAvailableMoves chess, clearAvailableMoves, noSelfCapture,
+        pawnZero, captureZero, zeroRule, nMoveRule 50, nFoldRepetition 3
     ]
 
 chessInput :: IO ChessEvent
