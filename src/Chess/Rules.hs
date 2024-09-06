@@ -9,7 +9,7 @@ import qualified Data.Bimap as B
 import Data.Maybe (isNothing, isJust, mapMaybe, fromJust)
 import Control.Monad.Trans.State.Lazy ( get )
 import Control.Lens ( use, (%=), (.=), at, (^.), (?=), to )
-import Control.Monad (when, forM_, unless, forM)
+import Control.Monad (when, forM_, unless)
 import Data.List (intercalate, uncons)
 import Data.Char (toLower)
 import Network.WebSockets
@@ -81,8 +81,8 @@ connectSendStatus (PlayerConnected p) = do
     currentToMove <- use toMove
 
     case currentTurn of
-        Normal _      -> cause $ SendRaw p $ Status ("It's " ++ show (fromJust currentToMove) ++ "'s turn")
-        Promoting _ c -> cause $ SendRaw p $ Status ("It's " ++ show c ++ "'s turn")
+        Normal _      -> cause $ SendRaw [p] $ Status ("It's " ++ show (fromJust currentToMove) ++ "'s turn")
+        Promoting _ c -> cause $ SendRaw [p] $ Status ("It's " ++ show c ++ "'s turn")
 connectSendStatus _ = return ()
 
 nextTurnSendStatus :: Chess
@@ -92,8 +92,8 @@ nextTurnSendStatus NextTurn = do
 
     forM_ [White, Black] $ \ p ->
         case currentTurn of
-            Normal _      -> cause $ SendRaw p $ Status ("It's " ++ show (fromJust currentToMove) ++ "'s turn")
-            Promoting _ c -> cause $ SendRaw p $ Status ("It's " ++ show c ++ "'s turn")
+            Normal _      -> cause $ SendRaw [p] $ Status ("It's " ++ show (fromJust currentToMove) ++ "'s turn")
+            Promoting _ c -> cause $ SendRaw [p] $ Status ("It's " ++ show c ++ "'s turn")
 nextTurnSendStatus _ = return ()
 
 
@@ -194,15 +194,14 @@ winRule MoveEnd = do
             Just _  -> cause NextTurn
 winRule _ = return ()
 
+
 sendWin :: Chess
 sendWin Draw = do
-    cause $ SendRaw White $ Status "Draw"
-    cause $ SendRaw Black $ Status "Draw"
+    cause $ SendRaw [White, Black] $ Status "Draw"
 sendWin (Win c) = do
-    let c' = if c == White then Black else White
+    let winner = show c
 
-    cause $ SendRaw c $ Status "You win :)"
-    cause $ SendRaw c' $ Status "You lose :("
+    cause $ SendRaw [White, Black] $ Status $ winner ++ " wins"
 sendWin _ = return ()
 
 isMove :: ChessEvent -> Bool
@@ -233,16 +232,16 @@ clearAvailableMoves (UpdateSelection c _) = do
 clearAvailableMoves _ = return ()
 
 
-serverRule :: TMVar (M.Map PlayerId Connection) -> Chess
+serverRule :: TMVar (M.Map Colour [Connection]) -> Chess
 serverRule connRef e = do
     case e of
         (PlayerConnected c) -> do
             cause $ SendBoard c
-        (SendDrawTile c a p s)  -> do
-            cause $ SendRaw c $ Tile (screenTransform c a) (first pieceImage <$> p) s
+        (SendDrawTile c a p s)  -> do -- TODO move transforms to client
+            cause $ SendRaw [c] $ Tile (screenTransform c a) (first pieceImage <$> p) s
         (SendBoard c)   -> do
             currentBoard <- use board
-            cause $ SendRaw c $ Board (M.mapKeys (screenTransform c) $ M.map (first pieceImage) currentBoard)
+            cause $ SendRaw [c] $ Board (M.mapKeys (screenTransform c) $ M.map (first pieceImage) currentBoard)
         SendBoardAll    -> do
             cause $ SendBoard White
             cause $ SendBoard Black
@@ -250,21 +249,20 @@ serverRule connRef e = do
             cause $ SendTile White a
             cause $ SendTile Black a
         (SendTurn c)    -> do
-            cause $ SendRaw White $ Turn c
-            cause $ SendRaw Black $ Turn c
+            cause $ SendRaw [White, Black] $ Turn c
         (SendPromotionPrompt c) -> do
-            cause $ SendRaw c Promotion
+            cause $ SendRaw [c] Promotion
         (SendMarkAvailableMove c a) -> do
-            cause $ SendRaw c (MarkAvailableMove (screenTransform c a))
+            cause $ SendRaw [c] (MarkAvailableMove (screenTransform c a))
         (SendClearAvailableMoves c) -> do
-            cause $ SendRaw c ClearAvailableMoves
-        (SendRaw c d)   -> do
-            connMap <- use connections
+            cause $ SendRaw [c] ClearAvailableMoves
+        (SendRaw cs d)   -> do
             effect $ do
-                conns <- atomically $ readTMVar connRef
+                connM <- atomically $ readTMVar connRef
 
-                whenJust (M.lookup c connMap >>= \ x -> M.lookup x conns) $ \ conn -> do
-                    sendBinaryData conn $ encode d
+                forM_ cs $ \ c -> do
+                    whenJust (M.lookup c connM) $ \ conns -> do
+                        forM_ conns (flip sendBinaryData $ encode d)
         _               -> return ()
 
 
@@ -590,14 +588,6 @@ promote1 _ = return ()
 printBoard :: Chess
 printBoard PrintBoard = use board >>= effect . putStrLn . ppBoard >> effect (putStrLn "")
 printBoard _ = return ()
-
-disconnect :: Chess
-disconnect (PlayerDisconnected c) = do
-    connections %= M.delete c
-    currentConnections <- use connections
-
-    when (M.null currentConnections) $ cause CloseRoom
-disconnect _ = return ()
 
 winClose :: Chess
 winClose (Win _) = cause CloseRoom
