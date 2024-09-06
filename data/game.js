@@ -2,6 +2,7 @@ const urlParams = new URLSearchParams(window.location.search);
 const room = urlParams.get('room');
 const mode = urlParams.get('mode');
 const user = urlParams.get('user');
+const colour = urlParams.get('colour');
 
 displayfield = document.querySelector("#playfield");
 overfield = document.querySelector("#overlay");
@@ -187,7 +188,7 @@ socket.onmessage = function (event) {
 };
     
 socket.onopen = function (_) {
-    socket.send(aesonEncode([room, user], "Register"));
+    socket.send(aesonEncode([room, user, colour], "Register"));
 };
 
 

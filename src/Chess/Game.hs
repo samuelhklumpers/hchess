@@ -27,6 +27,32 @@ import Data.Aeson (ToJSON, FromJSON)
 import qualified Data.Bimap as B
 
 
+
+
+--                            v use a MinHeap
+type Brick a = (M.Map Int a, S.Set Int)
+--                     ^ use a MaxPrioHeap
+
+singleBrick :: a -> (M.Map Int a, S.Set Int)
+singleBrick x = (M.singleton 0 x , S.empty)
+
+pushBrick :: a -> Brick a -> (Brick a, Int)
+pushBrick a (m , f) = case S.lookupMin f of
+    Nothing -> ((M.insert (maybe 0 ((+1) . fst . fst) (M.maxViewWithKey m)) a m , f), 0)
+    Just i  -> ((M.insert i a m , S.delete i f), i)
+
+pushBrick_ :: a -> Brick a -> Brick a
+pushBrick_ a (m , f) = case S.lookupMin f of
+    Nothing -> (M.insert (maybe 0 ((+1) . fst . fst) (M.maxViewWithKey m)) a m , f)
+    Just i  -> (M.insert i a m , S.delete i f)
+
+dropBrick :: Int -> Brick a -> Brick a
+dropBrick i (m , f) = let m' = M.delete i m in
+    (m' , fst $ S.split (maybe 0 (fst . fst) (M.maxViewWithKey m')) (S.insert i f))
+
+brickToList :: Brick a -> [a]
+brickToList (m , _) = M.elems m
+
 -- What does this do?
 -- > IO cannot influence the game! (IO must come from the driver)
 data Action e = Event e | Effect (IO ())
@@ -48,7 +74,7 @@ combine f g e = f e >> g e
 compile :: Foldable t => t (Game s e) -> Game s e
 compile = foldr1 combine
 
-data Colour = Black | White deriving (Show, Eq, Ord, Generic)
+data Colour = Black | White deriving (Show, Eq, Ord, Generic, Read)
 data PieceType = K | Q | R | B | N | P deriving (Show, Eq, Generic, Ord)
 
 type Piece = (PieceType, Colour)
@@ -87,7 +113,7 @@ data ChessState = ChessState
     , _enpassant :: Maybe (Int, Square, Square) , _zeroing :: Int , _history :: M.Map ChessBoard Int
     , _touch :: M.Map Colour (Square, Piece) , _players :: B.Bimap String Colour
     , _promoting :: Maybe (Square, Piece)
-    , _connections :: M.Map Colour PlayerId , _running :: Bool } deriving (Show, Eq)
+    , _running :: Bool , _closing :: Bool } deriving (Show, Eq)
 makeLenses ''ChessState
 
 
@@ -102,8 +128,8 @@ chessInitial = ChessState {
         _history     = M.empty,
         _players     = B.empty,
         _promoting   = Nothing,
-        _connections = M.empty,
-        _running     = True
+        _running     = True,
+        _closing     = False
     }
     where
     initialFEN :: String
@@ -251,8 +277,8 @@ data ChessEvent = UncheckedMove Square Square | UncheckedMovePiece Piece Square 
     | TimedOut Colour | PlayerConnected Colour
     | SendBoard Colour | SendTile Colour Square | SendDrawTile Colour Square (Maybe Piece) String | SendBoardAll | SendTileAll Square | PutTile Square (Maybe Piece)
     | SendSelect Colour Square Bool | NextSubTurn | Zeroing
-    | SendTurn Colour | SendRaw Colour ChessOutMessage | MoveEnd | Win Colour | Draw | PlayerDisconnected Colour
-    | CloseRoom | UpdateSelection Colour Square | SendPromotionPrompt Colour | Promote Colour String
+    | SendTurn Colour | SendRaw [Colour] ChessOutMessage | MoveEnd | Win Colour | Draw | PlayerDisconnected Colour
+    | CloseRoom | TestCloseRoom | UpdateSelection Colour Square | SendPromotionPrompt Colour | Promote Colour String
     | NextTurn | SendMarkAvailableMove Colour Square | SendClearAvailableMoves Colour 
     | UncheckedMoveSelf Piece Square Square | UncheckedMoveTurn Piece Square Square deriving Show
 

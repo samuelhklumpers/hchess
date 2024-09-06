@@ -1,9 +1,13 @@
-{-# LANGUAGE TypeFamilies, DeriveGeneric, OverloadedStrings, LambdaCase, ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies, DeriveGeneric, OverloadedStrings, ScopedTypeVariables #-}
+{-# LANGUAGE InstanceSigs #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 
 module Chess (chessRunner, chessGame, chessServer) where
 
+import qualified Data.Bimap as B
 import qualified Data.Map as M
+import qualified Data.List as L
 import Text.Parsec
     ( char,
       choice,
@@ -11,22 +15,20 @@ import Text.Parsec
       Parsec )
 import Text.Parsec.Token (natural)
 
-import Control.Lens ( at, view, (&), (?~), (%~), over, (.=) )
-import Control.Monad (forever, unless)
+import Control.Lens ( at, view, (&), (?~), (%~), (.=), (^.), use, (.~) )
+import Control.Monad (forever, unless, void, when)
 import Text.Parsec.Language (haskell)
 import Network.WebSockets
     ( acceptRequest,
       receiveDataMessage,
       runServer,
-      Connection,
       ServerApp,
-      WebSocketsData(fromDataMessage), ConnectionException )
+      WebSocketsData(fromDataMessage), ConnectionException, Connection )
 import Control.Concurrent.Timeout ( timeout )
 import Data.Aeson (decode, ToJSON, FromJSON)
 import GHC.Generics (Generic)
 import Control.Concurrent.STM
-    ( atomically, newTMVarIO, readTMVar, writeTMVar, TMVar )
-import qualified Data.Bimap as B
+    ( atomically, newTMVarIO, readTMVar, writeTMVar, TMVar, takeTMVar )
 
 
 import Chess.Rules
@@ -35,6 +37,7 @@ import Control.Monad.Trans.Class
 import Control.Exception (catch)
 import Control.Monad.IO.Class (liftIO)
 import Data.Either (fromRight)
+import Network.WebSockets.Connection (Connection(..))
 
 
 chess :: Game ChessState ChessEvent
@@ -44,7 +47,7 @@ chess = compile [
         touch1, touch1Turn, touch1Piece, touch1Colour, touch2Unchecked, moveTurn, uncheckedMovePiece, specializeMove,
         kingMove, generalizeMove, capture, nonCapture, moveMayCapture, pawnMove, moveEnd,
         pawnDoubleMove, pawnCapture, pawnEP, rawTake, rawMove, queenMove, rookMove, bishopMove, knightMove, castlingMove,
-        putTile, winRule, sendWin, disconnect, winClose, sendSelection,
+        putTile, winRule, sendWin, testCloseRoom, winClose, sendSelection,
         promotionCheck, promotionPrompt, promote1, drawSelection, sendTile, connectSendStatus, nextTurnSendStatus,
         sendAvailableMoves chess, clearAvailableMoves, noSelfCapture,
         pawnZero, captureZero, zeroRule, nMoveRule 50, nFoldRepetition 3
@@ -61,107 +64,164 @@ chessInput = do
 secondUs :: Integer
 secondUs = 1000 * 1000
 
-data ChessMessage = TouchMsg Square | Register String String | PromoteMsg String deriving (Show, Eq, Generic)
+data ChessMessage = TouchMsg Square | Register String String Colour | PromoteMsg String deriving (Show, Eq, Generic)
 
 instance ToJSON ChessMessage where
 instance FromJSON ChessMessage where
 
 interpretMessage :: Colour -> ChessMessage -> Maybe ChessEvent
-interpretMessage p (TouchMsg a) = Just $ Touch p (screenTransform p a) -- TODO maybe screentransform should be clientside?
+interpretMessage p (TouchMsg a) = Just $ Touch p (screenTransform p a)
 interpretMessage p (PromoteMsg str) = Just $ Promote p str
 interpretMessage _ _ = Nothing
 
-withTMVarIO :: TMVar a -> (a -> IO a) -> IO ()
-withTMVarIO var f = do
-    val  <- atomically $ readTMVar var
+withTMVarIO_ :: TMVar a -> (a -> IO a) -> IO ()
+withTMVarIO_ var f = do
+    val  <- atomically $ takeTMVar var
     val' <- f val
     atomically $ writeTMVar var val'
 
+withTMVarIO :: TMVar a -> (a -> IO (a, b)) -> IO b
+withTMVarIO var f = do
+    val  <- atomically $ takeTMVar var
+    (val', ret) <- f val
+    atomically $ writeTMVar var val'
+    return ret
 
-chessApp :: TMVar (M.Map PlayerId Connection) -> TMVar (M.Map String (TMVar ChessState)) -> ServerApp
-chessApp connRef refGames pending = do
-    conn <- acceptRequest pending
+type Registration = (String, String, Colour)
 
-    maybeMsg <- timeout (30 * secondUs) $ receiveDataMessage conn
-    let maybeRoom = maybeMsg >>= decode . fromDataMessage
+fromRegister :: ChessMessage -> Maybe Registration
+fromRegister (Register a b c) = Just (a , b , c)
+fromRegister _ = Nothing
 
-    whenJust maybeRoom $ \case
-        Register room ident -> do
-            games <- atomically $ readTMVar refGames
+{-
+setdefault :: Ord k => k -> a -> M.Map k a -> (M.Map k a , a)
+setdefault k a m = case m ^. at k of
+    Nothing -> (m & at k ?~ a, a)
+    Just a' -> (m, a')
 
-            refGame <- case view (at room) games of
-                Just refGame -> do
-                    return refGame
-                Nothing -> do
-                    refGame <- newTMVarIO chessInitial
-                    atomically $ writeTMVar refGames (games & at room ?~ refGame)
-                    return refGame
+findInsertM :: (Ord k, Monad m) => (a -> a -> a) -> k -> m a -> M.Map k a -> m (M.Map k a , a)
+findInsertM f k ma m = case m ^. at k of
+    Nothing -> ma >>= \a -> return (m & at k ?~ a, a)
+    Just a' -> return (m, a')
+-}
 
-            game <- atomically $ readTMVar refGame
-            let playerMap = view players game
+-- almost insertLookupWithKey except for not doing the effect if the key exists
+setdefaultM :: (Ord k, Monad m) => k -> m a -> M.Map k a -> m (M.Map k a , a)
+setdefaultM k ma m = case m ^. at k of
+    Nothing -> ma >>= \a -> return (m & at k ?~ a, a)
+    Just a' -> return (m, a')
 
-            maybeColour <- case B.lookup ident playerMap of
-                Just colour -> do
-                    return $ Just colour
-                Nothing     -> case B.lookupR White playerMap of
-                    Just _  -> case B.lookupR Black playerMap of
-                        Just _  -> do
-                            return Nothing
-                        Nothing -> do
-                            atomically $ writeTMVar refGame (game & players %~ B.insert ident Black)
-                            return $ Just Black
-                    Nothing -> do
-                        atomically $ writeTMVar refGame (game & players %~ B.insert ident White)
-                        return $ Just White
+instance Eq Connection where
+    (==) :: Connection -> Connection -> Bool
+    c == c' = connectionSentClose c == connectionSentClose c'
 
-            whenJust maybeColour $ \ colour -> mainloop colour (room , ident) refGame conn
-        _ -> return ()
-
+chessApp :: TMVar (M.Map String (TMVar (M.Map Colour [Connection]))) -> TMVar (M.Map String (TMVar ChessState)) -> ServerApp
+chessApp refRefConn refRefGame pending = void (runMaybeT acceptor)
     where
-    mainloop :: Colour -> PlayerId -> TMVar ChessState -> Connection -> IO ()
-    mainloop colour ident@(room , _) st conn = do
-        withTMVarIO connRef (return . M.insert ident conn)
-        withTMVarIO st (return . over connections (M.insert colour ident))
+    acceptor :: MaybeT IO ()
+    acceptor = do
+        conn <- liftIO $ acceptRequest pending
+        msg  <- MaybeT $ timeout (30 * secondUs) $ receiveDataMessage conn
+        (room, ident, colour) <- hoistMaybe $ decode (fromDataMessage msg) >>= fromRegister
 
-        withTMVarIO st (`runner` [Event $ PlayerConnected colour])
+        refGame <- liftIO $ withTMVarIO refRefGame $ setdefaultM room (newTMVarIO chessInitial)
+        refConn <- liftIO $ withTMVarIO refRefConn $ \ connRefM -> do
+            case M.lookup room connRefM of
+                Nothing     -> do
+                    refConn <- newTMVarIO $ M.singleton colour [conn]
+                    return (M.insert room refConn connRefM, refConn)
+                Just refConn -> do
+                    withTMVarIO_ refConn $ \ connM -> do
+                        return $ M.insertWith (++) colour [conn] connM
+                    return (connRefM, refConn)
 
-        _ <- runMaybeT $ forever $ do
-            isRunning <- view running <$> liftIO (atomically $ readTMVar st)
-            unless isRunning $ hoistMaybe Nothing
+        spectator <- liftIO $ withTMVarIO refGame $ \ game -> do
+            let spectator = maybe False (ident /=) (B.lookupR colour $ game ^. players)
 
-            maybeMsg <- lift $ do
-                catch (timeout (10 * 60 * secondUs) $ receiveDataMessage conn) $
-                    \ (_ :: ConnectionException) -> return Nothing
+            if spectator then
+                return (game , spectator)
+            else
+                return (game & players %~ B.insert ident colour , spectator)
 
-            case maybeMsg of
-                Nothing  -> do
-                    lift $ withTMVarIO st (`runner` [Event $ PlayerDisconnected colour])
-                    hoistMaybe Nothing
-                Just msg -> do
-                    let maybeEvent = decode (fromDataMessage msg) >>= interpretMessage colour
 
-                    whenJust maybeEvent $ \ ev -> do
-                        lift $ withTMVarIO st (`runner` [Event ev])
+        let baseRules = combine chess (serverRule refConn)
+        let rules = if spectator then
+                        baseRules
+                    else
+                        combine baseRules (
+                        combine (disconnectClose refConn refGame) (
+                                roomRule refRefGame refRefConn room))
 
-        withTMVarIO connRef (return . M.delete ident)
-            where
-            runner = recGame $ combine chess (combine (roomRule refGames room) (serverRule connRef))
+        let runner = recGame rules
+        liftIO $ withTMVarIO_ refGame (`runner` [Event $ PlayerConnected colour])
+        liftIO $ mainloop runner colour spectator refGame conn
 
-roomRule :: TMVar (M.Map String (TMVar ChessState)) -> String -> Chess
-roomRule refGames room e = case e of
+        liftIO $ withTMVarIO_ refConn (return . M.adjust (L.delete conn) colour)
+        where
+        mainloop :: Runner ChessState ChessEvent -> Colour -> Bool -> TMVar ChessState -> Connection -> IO ()
+        mainloop runner colour spectator st conn = do
+            _ <- runMaybeT $ forever $ do
+                isRunning <- view running <$> liftIO (atomically $ readTMVar st)
+                unless isRunning $ hoistMaybe Nothing
+
+                maybeMsg <- lift $ do
+                    catch (timeout (10 * 60 * secondUs) $ receiveDataMessage conn) $
+                        \ (_ :: ConnectionException) -> return Nothing
+
+                case maybeMsg of
+                    Nothing  -> do
+                        unless spectator $ do
+                            lift $ withTMVarIO_ st (`runner` [Event $ PlayerDisconnected colour])
+                        hoistMaybe Nothing
+                    Just msg -> do
+                        unless spectator $ do
+                            let maybeEvent = decode (fromDataMessage msg) >>= interpretMessage colour
+
+                            whenJust maybeEvent $ \ ev -> do
+                                lift $ withTMVarIO_ st (`runner` [Event ev])
+            return ()
+
+roomRule :: TMVar (M.Map String (TMVar ChessState)) -> TMVar (M.Map String (TMVar (M.Map Colour [Connection]))) -> String -> Chess
+roomRule refRefGame refConn room e = case e of
     CloseRoom -> do
-        effect $ withTMVarIO refGames (return . M.delete room)
+        effect $ withTMVarIO_ refRefGame (return . M.delete room)
+        effect $ withTMVarIO_ refConn (return . M.delete room)
         running .= False
     _         -> return ()
 
+disconnectClose :: TMVar (M.Map Colour [Connection]) -> TMVar ChessState -> Chess
+disconnectClose refConn refGame (PlayerDisconnected _) = do
+    effect $ do
+        connM <- atomically $ readTMVar refConn
+        when (M.null connM) $ do
+            withTMVarIO_ refGame (return . (closing .~ True))
+    cause TestCloseRoom
+disconnectClose _ _ _ = return ()
 
+testCloseRoom :: Chess
+testCloseRoom TestCloseRoom = do
+    isClosing <- use closing
+    when isClosing $ cause CloseRoom
+testCloseRoom _ = return ()
+
+
+{-
+disconnect :: Chess
+disconnect (PlayerDisconnected c) = do
+    connections %= M.delete c
+    currentConnections <- use connections
+
+    when (M.null currentConnections) $ cause CloseRoom
+disconnect _ = return ()
+-}
 
 chessServer :: Int -> IO ()
 chessServer port = do
-    refGames <- newTMVarIO M.empty
+    refRefGame <- newTMVarIO M.empty
     refConn  <- newTMVarIO M.empty
 
-    runServer "0.0.0.0" port (chessApp refConn refGames)
+    let app = chessApp refConn refRefGame
+    runServer "0.0.0.0" port app
 
 parseSquare :: Parsec String () ChessEvent
 parseSquare = do
@@ -203,5 +263,5 @@ testQueen = do
     _ <- chessRunner chessInitial $ map Event
         [ Touch White (4, 6), Touch White (4, 4)
         , Touch Black (0, 1), Touch Black (0, 2)
-        , Touch White (3, 7), Touch White (7, 3)] 
+        , Touch White (3, 7), Touch White (7, 3)]
     return ()
