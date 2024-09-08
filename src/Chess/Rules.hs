@@ -478,7 +478,8 @@ zeroRule _ = return ()
 nMoveRule :: Natural -> Chess
 nMoveRule n MoveEnd = do
     currentTurn <- use $ turn . to moveNumber
-    when (currentTurn >= fromIntegral n) $ cause Draw 
+    lastZero <- use zeroing
+    when (currentTurn >= fromIntegral n + lastZero) $ cause Draw 
 nMoveRule _ _ = return ()
 
 nFoldRepetition :: Natural -> Chess

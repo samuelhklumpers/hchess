@@ -1,4 +1,6 @@
 {-# LANGUAGE TypeFamilies, TupleSections, TemplateHaskell, DeriveGeneric, OverloadedStrings, LambdaCase #-}
+{-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 module Chess.Game ( module Chess.Game ) where
 
@@ -56,6 +58,8 @@ type Piece = (PieceType, Colour)
 type Rank = Int
 type File = Int
 type Square = (File, Rank)
+type Move = (Piece, Square, Square)
+type Capture = (Move, Piece)
 
 type Room = String
 type PlayerName = String
@@ -87,8 +91,14 @@ data ChessState = ChessState
     , _enpassant :: Maybe (Int, Square, Square) , _zeroing :: Int , _history :: M.Map ChessBoard Int
     , _touch :: M.Map Colour (Square, Piece) , _players :: B.Bimap String Colour
     , _promoting :: Maybe (Square, Piece)
+    , _moves :: M.Map Colour [Move], _captures :: M.Map Colour [Capture] 
     , _connections :: M.Map Colour PlayerId , _running :: Bool } deriving (Show, Eq)
 makeLenses ''ChessState
+
+-- in Agda you would make this a dependent map and just add types on the fly
+-- https://hackage.haskell.org/package/dependent-map-0.4.0.0/docs/Data-Dependent-Map.html
+-- https://github.com/obsidiansystems/dependent-map
+-- see Test.hs.bak
 
 
 chessInitial :: ChessState
@@ -103,6 +113,8 @@ chessInitial = ChessState {
         _players     = B.empty,
         _promoting   = Nothing,
         _connections = M.empty,
+        _moves       = M.empty,
+        _captures    = M.empty,
         _running     = True
     }
     where

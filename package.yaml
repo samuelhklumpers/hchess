@@ -48,6 +48,10 @@ library:
   - bimap
   - stm
   - bytestring
+  - dependent-map
+  - constraints-extras
+  - dependent-sum
+  - dependent-sum-template
 
 executables:
   hchess-exe:

@@ -40,7 +40,11 @@ library
     , base >=4.7 && <5
     , bimap
     , bytestring
+    , constraints-extras
     , containers
+    , dependent-map
+    , dependent-sum
+    , dependent-sum-template
     , lens
     , parsec
     , stm
