@@ -27,7 +27,13 @@ library
   exposed-modules:
       Chess
       Chess.Game
+      Chess.Internal
       Chess.Rules
+      Chess.Structure
+      Experiment.Experiment
+      Experiment.Experiment2
+      Experiment.Experiment3
+      Experiment.Experiment4
   other-modules:
       Paths_hchess
   autogen-modules:
@@ -45,9 +51,13 @@ library
     , dependent-map
     , dependent-sum
     , dependent-sum-template
+    , free
     , lens
     , parsec
+    , singletons
+    , singletons-base
     , stm
+    , text
     , transformers
     , unbounded-delays
     , wai
@@ -63,7 +73,7 @@ executable hchess-exe
       Paths_hchess
   hs-source-dirs:
       app
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N -prof -fprof-auto
   build-depends:
       aeson
     , base >=4.7 && <5

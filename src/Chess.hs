@@ -1,7 +1,9 @@
-{-# LANGUAGE TypeFamilies, DeriveGeneric, OverloadedStrings, LambdaCase, ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies, DeriveGeneric, OverloadedStrings, LambdaCase, ScopedTypeVariables, TemplateHaskell #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TupleSections #-}
 
 
-module Chess (chessRunner, chessGame, chessServer) where
+module Chess where
 
 import qualified Data.Map as M
 import Text.Parsec
@@ -29,34 +31,118 @@ import Control.Concurrent.STM
 import qualified Data.Bimap as B
 
 
-import Chess.Rules
 import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.Class
 import Control.Exception (catch)
 import Control.Monad.IO.Class (liftIO)
 import Data.Either (fromRight)
+import GHC.Exts (Any)
+import qualified Data.Set as S
+
+import Chess.Rules
+import Chess.Game
+import Chess.Structure
+import Data.Data (Proxy(..))
+import Type.Reflection (someTypeRep, typeRep)
+import Data.Dynamic (toDyn)
+import GHC.Stack (HasCallStack)
+
+import Chess.Internal
 
 
-chess :: Game ChessState ChessEvent
-chess = compile [
-        logEvent,
-        --printBoard, movePrintBoard,
-        touch1, touch1Turn, touch1Piece, touch1Colour, touch2Unchecked, moveTurn, uncheckedMovePiece, specializeMove,
-        kingMove, generalizeMove, capture, nonCapture, moveMayCapture, pawnMove, moveEnd,
-        pawnDoubleMove, pawnCapture, pawnEP, rawTake, rawMove, queenMove, rookMove, bishopMove, knightMove, castlingMove,
-        putTile, winRule, sendWin, disconnect, winClose, sendSelection,
-        promotionCheck, promotionPrompt, promote1, drawSelection, sendTile, connectSendStatus, nextTurnSendStatus,
-        sendAvailableMoves chess, clearAvailableMoves, noSelfCapture,
-        pawnZero, captureZero, zeroRule, nMoveRule 50, nFoldRepetition 3
-    ]
+chess' :: HasCallStack => Game ChessState -> Game ChessState
+chess' self = mempty
+    & registerRule "Touch" playerTouch
+        & registerRule "UpdateSelection" (markAvailableMoves self)
+        & registerRule "UpdateSelection" clearAvailableMoves
+        & registerRule "UpdateSelection" updateSelection
+        & registerRule "SendSelect" sendSelect
 
-chessInput :: IO ChessEvent
-chessInput = do
-    str <- getLine
+        & registerRule "Touch1" touch1Turn
+        & registerRule "Touch1Turn" touch1Piece
+        & registerRule "Touch1Piece" touch1Colour
 
-    case runParser parseSquare () "" str of
-        Left _  -> chessInput
-        Right y -> return y
+    & registerRule "Touch2" touch2
+    & registerRule "UncheckedMove" uncheckedMovePiece
+        & registerRule "UncheckedMovePiece" uncheckedMoveTurn
+        & registerRule "UncheckedMoveTurn" uncheckedMoveSelf
+        & registerRule "UncheckedMoveSelf" specializeMove
+            & registerRule "UncheckedKMove" kingMove
+            & registerRule "UncheckedKMove" castlingMove
+            & registerRule "UncheckedQMove" queenMove
+            & registerRule "UncheckedRMove" rookMove
+            & registerRule "UncheckedBMove" bishopMove
+            & registerRule "UncheckedKMove" knightMove
+            & registerRule "UncheckedPMove" pawnMove
+            & registerRule "UncheckedPMove" pawnDoubleMove
+            & registerRule "UncheckedPMove" pawnCapture
+            & registerRule "UncheckedPMove" pawnEP
+
+        & registerRule "PromotionCheck" promotionCheck
+        & registerRule "CheckedMovePiece" pawnZero
+        
+    & registerRule "CheckedMovePiece" moveMayCapture
+        & registerRule "NonCapture" nonCapture
+        & registerRule "Capture" captureZero
+            & registerRule "Zeroing" zeroRule
+        & registerRule "Capture" capture
+
+        & registerRule "RawMove" rawMove
+        & registerRule "Take" rawTake
+            & registerRule "PutTile" putTile
+    
+    & registerRule "MoveEnd" (nMoveRule 50)
+    & registerRule "MoveEnd" (nFoldRepetition 3)
+    & registerRule "MoveEnd" winRule
+        & registerRule "Win" winClose
+        & registerRule "NextRule" nextTurnSendStatus
+    & registerRule "MoveEnd" nextSubTurn
+        & registerRule "NextSubTurn" promotionPrompt    
+            & registerRule "TryPromote" tryPromote
+    
+    & registerRule "PlayerConnected" connectSendBoard
+    & registerRule "PlayerConnected" connectSendStatus
+    & registerRule "PlayerDisconnected" disconnect
+    & registerRule "Draw" sendDraw
+    & registerRule "Win" sendWin
+
+    & registerRule "SendBoardAll" serveBoardAll
+    & registerRule "SendTileAll" serveDrawTileAll
+    & registerRule "SendTile" sendTile
+    & registerRule "SendDrawTile" serveDrawTile
+    & registerRule "SendBoard" serveBoard
+    & registerRule "SendTurn" serveTurn
+    & registerRule "SendPromotionPrompt" servePromotionPrompt
+    & registerRule "SendMarkAvailableMove" serveMarkAvailableMove
+    & registerRule "SendClearAvailableMoves" serveClearAvailableMoves
+    
+    & registerRule "MoveEnd" movePrintBoard
+    & registerRule "PrintBoard" printBoard
+
+
+chess :: Game ChessState
+chess = chess' chess
+
+-- TODO overwriting
+{-
+chessRTS :: Game ChessState
+chessRTS = chess
+    & overwriteRule "touch1" touch1TurnRTS
+-}
+
+-- TODO splicing
+{-
+chessAtomic :: Game ChessState
+chessAtomic = chess
+    & spliceRule "Capture" "Capture2" captureExplode
+-}
+
+-- TODO registerRules
+{-
+
+    & registerRule "UncheckedMoveTurn" [noSelfCapture, somethingElse]
+-}
+
 
 secondUs :: Integer
 secondUs = 1000 * 1000
@@ -66,18 +152,13 @@ data ChessMessage = TouchMsg Square | Register String String | PromoteMsg String
 instance ToJSON ChessMessage where
 instance FromJSON ChessMessage where
 
-interpretMessage :: Colour -> ChessMessage -> Maybe ChessEvent
-interpretMessage p (TouchMsg a) = Just $ Touch p (screenTransform p a) -- TODO maybe screentransform should be clientside?
-interpretMessage p (PromoteMsg str) = Just $ Promote p str
+interpretMessage :: Colour -> ChessMessage -> Maybe Action
+interpretMessage p (TouchMsg a) = Just $ Event "Touch" $ toDyn (PlayerTouch p a)
+interpretMessage p (PromoteMsg str) = Just $ Event "TryPromote" $ toDyn (p , str)
 interpretMessage _ _ = Nothing
 
-withTMVarIO :: TMVar a -> (a -> IO a) -> IO ()
-withTMVarIO var f = do
-    val  <- atomically $ readTMVar var
-    val' <- f val
-    atomically $ writeTMVar var val'
 
-
+    -- & registerRule "SendRaw " (serverRule _)
 chessApp :: TMVar (M.Map PlayerId Connection) -> TMVar (M.Map String (TMVar ChessState)) -> ServerApp
 chessApp connRef refGames pending = do
     conn <- acceptRequest pending
@@ -123,7 +204,7 @@ chessApp connRef refGames pending = do
         withTMVarIO connRef (return . M.insert ident conn)
         withTMVarIO st (return . over connections (M.insert colour ident))
 
-        withTMVarIO st (`runner` [Event $ PlayerConnected colour])
+        withTMVarIO st (`runner` [Event "PlayerConnected" $ toDyn colour])
 
         _ <- runMaybeT $ forever $ do
             isRunning <- view running <$> liftIO (atomically $ readTMVar st)
@@ -135,26 +216,19 @@ chessApp connRef refGames pending = do
 
             case maybeMsg of
                 Nothing  -> do
-                    lift $ withTMVarIO st (`runner` [Event $ PlayerDisconnected colour])
+                    lift $ withTMVarIO st (`runner` [Event "PlayerDisconnected" $ toDyn colour])
                     hoistMaybe Nothing
                 Just msg -> do
                     let maybeEvent = decode (fromDataMessage msg) >>= interpretMessage colour
 
                     whenJust maybeEvent $ \ ev -> do
-                        lift $ withTMVarIO st (`runner` [Event ev])
+                        lift $ withTMVarIO st (`runner` [ev])
 
         withTMVarIO connRef (return . M.delete ident)
             where
-            runner = recGame $ combine chess (combine (roomRule refGames room) (serverRule connRef))
-
-roomRule :: TMVar (M.Map String (TMVar ChessState)) -> String -> Chess
-roomRule refGames room e = case e of
-    CloseRoom -> do
-        effect $ withTMVarIO refGames (return . M.delete room)
-        running .= False
-    _         -> return ()
-
-
+            runner = runGame' $ chess
+                & registerRule "CloseRoom" (roomRule refGames room)
+                & registerRule "SendRaw" (serverRule connRef)
 
 chessServer :: Int -> IO ()
 chessServer port = do
@@ -163,45 +237,65 @@ chessServer port = do
 
     runServer "0.0.0.0" port (chessApp refConn refGames)
 
-parseSquare :: Parsec String () ChessEvent
+parseSquare :: Parsec String () Action
 parseSquare = do
     c <- choice [char 'W' >> return White , char 'B' >> return Black]
     _ <- char ' '
     x <- fromInteger <$> natural haskell
     y <- fromInteger <$> natural haskell
 
-    return $ Touch c (x, y)
+    return $ Event "Touch" $ toDyn $ PlayerTouch c (x, y)
 
-chessRunner :: Runner ChessState ChessEvent
-chessRunner = recGame chess
+logEvent :: Show a => Rule ChessState a
+logEvent e = effect $ print e
 
-chessGame :: IO ChessState
-chessGame = runGame chessRunner chessInput chessInitial
+chessRunner :: Runner' ChessState
+chessRunner = runGame' chess
 
+testQueen :: IO ()
+testQueen = do
+    _ <- chessRunner chessInitial $ map (uncurry Event . ("Touch",) . toDyn)
+        [ PlayerTouch White (4, 6)
+        , PlayerTouch White (4, 4)
+        , PlayerTouch Black (0, 1)
+        , PlayerTouch Black (0, 2)
+        , PlayerTouch White (3, 7)
+        , PlayerTouch White (7, 3)] 
+    return ()
 
 testPromotion :: IO ()
 testPromotion = do
     let targetBoard = fromRight undefined $ parseFEN "2R5/3P4/8/8/8/4kp2/P7/5K2"
-    newState <- chessRunner (chessInitial { _board = targetBoard }) $ map Event
-        [ PrintBoard
-        , Touch White (3, 1), Touch White (3, 0), Promote White "Q"
-        , Touch Black (4, 5), Touch Black (3, 5)
-        , Touch White (3, 0), Touch White (3, 5) ]
+    newState <- chessRunner (chessInitial { _board = targetBoard }) $ map (uncurry Event)
+        [ ("PrintBoard", toDyn ())
+        , ("Touch", toDyn $ PlayerTouch White (3, 1))
+        , ("Touch", toDyn $ PlayerTouch White (3, 0))
+        , ("TryPromote", toDyn (White, "Q" :: String))
+        , ("Touch", toDyn $ PlayerTouch Black (4, 5))
+        , ("Touch", toDyn $ PlayerTouch Black (3, 5))
+        , ("Touch", toDyn $ PlayerTouch White (3, 0))
+        , ("Touch", toDyn $ PlayerTouch White (3, 5))]
 
     let targetState = chessInitial {
         _board = targetBoard,
         _turn  = Normal 9
     }
 
-    if newState == targetState then
+    if _board newState == _board targetState then
         putStrLn "All good!"
     else
         putStrLn ":("
 
-testQueen :: IO ()
-testQueen = do
-    _ <- chessRunner chessInitial $ map Event
-        [ Touch White (4, 6), Touch White (4, 4)
-        , Touch Black (0, 1), Touch Black (0, 2)
-        , Touch White (3, 7), Touch White (7, 3)] 
-    return ()
+    putStrLn $ ppBoard $ _board newState
+    putStrLn ""
+    putStrLn $ ppBoard $ _board targetState
+
+{-
+chessInput :: IO ChessEvent
+chessInput = do
+    str <- getLine
+
+    case runParser parseSquare () "" str of
+        Left _  -> chessInput
+        Right y -> return y
+-}
