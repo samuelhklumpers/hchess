@@ -13,6 +13,7 @@ import Data.Aeson
 import System.FilePath
 import System.Directory
 import WaiAppStatic.Types (MaxAge(..))
+import Control.Concurrent
 
 
 cfgFileName :: FilePath

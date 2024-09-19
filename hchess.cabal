@@ -27,7 +27,9 @@ library
   exposed-modules:
       Chess
       Chess.Game
+      Chess.Internal
       Chess.Rules
+      Chess.Structure
   other-modules:
       Paths_hchess
   autogen-modules:
@@ -45,9 +47,13 @@ library
     , dependent-map
     , dependent-sum
     , dependent-sum-template
+    , free
     , lens
     , parsec
+    , singletons
+    , singletons-base
     , stm
+    , text
     , transformers
     , unbounded-delays
     , wai
