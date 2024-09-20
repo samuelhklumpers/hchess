@@ -1,286 +1,177 @@
-{-# LANGUAGE TypeFamilies, TupleSections, TemplateHaskell, DeriveGeneric, OverloadedStrings, LambdaCase #-}
+{-# LANGUAGE TypeFamilies, LambdaCase, FlexibleInstances,
+RankNTypes, GADTs, ScopedTypeVariables, TypeApplications, PatternSynonyms #-}
+
 
 module Chess.Game ( module Chess.Game ) where
 
 import qualified Data.Map as M
-import qualified Data.Set as S
-import Text.Parsec
-    ( char,
-      digit,
-      letter,
-      choice,
-      getState,
-      many,
-      putState,
-      runParser,
-      Parsec, ParseError )
 
-import Data.Either ( fromRight )
-import Data.Maybe (catMaybes, mapMaybe)
-import Control.Monad.Trans.State.Lazy ( StateT(runStateT) )
+import Control.Monad.Trans.State.Lazy ( StateT(runStateT) , get, execStateT, put )
 import Control.Monad.Trans.Writer.Lazy ( tell, Writer, runWriter )
-import Control.Lens ( makeLenses, Getter, to )
 import Control.Monad.Trans.Class ( MonadTrans(..) )
 import Control.Monad (forM_)
-import GHC.Generics (Generic)
-import Data.Aeson (ToJSON, FromJSON)
-import qualified Data.Bimap as B
+import Data.Dynamic (Dynamic (..), Typeable, toDyn)
+import Type.Reflection (SomeTypeRep (..), type (:~~:) (..), eqTypeRep, typeOf, pattern TypeRep, TypeRep)
+import Control.Monad.Trans.Reader (ReaderT, ask, runReaderT)
+import Control.Monad.IO.Class (liftIO)
+import Data.Function ((&))
+import Control.Lens ((?~), at, (<>~), (^.))
+import Data.Foldable (foldrM)
+import GHC.Stack (HasCallStack)
+import GHC.IO (unsafePerformIO)
 
 
+-- * Events, Rules, and Games
 
+data Action = Event String Dynamic | Effect (IO ())
+type Consequence s = StateT s (ReaderT Events (Writer [Action]))
+type Rule s a = a -> Consequence s ()
 
---                            v use a MinHeap
-type Brick a = (M.Map Int a, S.Set Int)
---                     ^ use a MaxPrioHeap
+argType :: Typeable a => Rule s a -> TypeRep a
+argType _ = TypeRep
 
-singleBrick :: a -> (M.Map Int a, S.Set Int)
-singleBrick x = (M.singleton 0 x , S.empty)
+data SomeRule s where
+    SomeRule :: Typeable a => Rule s a -> SomeRule s
 
-pushBrick :: a -> Brick a -> (Brick a, Int)
-pushBrick a (m , f) = case S.lookupMin f of
-    Nothing -> ((M.insert (maybe 0 ((+1) . fst . fst) (M.maxViewWithKey m)) a m , f), 0)
-    Just i  -> ((M.insert i a m , S.delete i f), i)
+type Events = M.Map String SomeTypeRep
+type Rules s = M.Map String [SomeRule s]
 
-pushBrick_ :: a -> Brick a -> Brick a
-pushBrick_ a (m , f) = case S.lookupMin f of
-    Nothing -> (M.insert (maybe 0 ((+1) . fst . fst) (M.maxViewWithKey m)) a m , f)
-    Just i  -> (M.insert i a m , S.delete i f)
+type Game s = (Events, Rules s)
+type Runner' s = s -> [Action] -> IO s
+type Runner s = [Action] -> StateT s IO ()
 
-dropBrick :: Int -> Brick a -> Brick a
-dropBrick i (m , f) = let m' = M.delete i m in
-    (m' , fst $ S.split (maybe 0 (fst . fst) (M.maxViewWithKey m')) (S.insert i f))
+mkEvent :: Typeable a => String -> a -> Action
+mkEvent e a = Event e $ toDyn a
 
-brickToList :: Brick a -> [a]
-brickToList (m , _) = M.elems m
+cause :: (Typeable a, HasCallStack) => String -> a -> Consequence s ()
+cause e a = lift $ do
+    es <- ask
 
--- What does this do?
--- > IO cannot influence the game! (IO must come from the driver)
-data Action e = Event e | Effect (IO ())
+    seq (unsafePerformIO $ putStrLn e) (return ())
 
-cause :: (MonadTrans t) => a -> t (Writer [Action a]) ()
-cause = lift . tell . (:[]) . Event
+    case M.lookup e es of
+        Nothing -> do
+            seq
+                (unsafePerformIO $ putStrLn $ "Unregistered event: " ++ e)
+                (return ())
+        Just (SomeTypeRep t)  -> case eqTypeRep t (typeOf a) of
+            Nothing -> error $ "Argument type " ++ show (typeOf a) ++ " does not match expected type " ++ show t ++ " for event " ++ e ++ " while running!"
+            Just HRefl -> lift $ tell [mkEvent e a]
 
-effect :: (MonadTrans t) => IO () -> t (Writer [Action a]) ()
-effect = lift . tell . (:[]) . Effect
+effect :: IO () -> Consequence s ()
+effect = lift . lift . tell . (:[]) . Effect
 
-whenJust :: Monad m => Maybe a -> (a -> m ()) -> m ()
-whenJust = forM_
+registerEvent :: String -> SomeTypeRep -> Game s -> Game s
+registerEvent e t (es , rs) = (es & at e ?~ t , rs)
 
-type Game s e = e -> StateT s (Writer [Action e]) ()
-
-combine :: Game s e -> Game s e -> Game s e
-combine f g e = f e >> g e
-
-compile :: Foldable t => t (Game s e) -> Game s e
-compile = foldr1 combine
-
-data Colour = Black | White deriving (Show, Eq, Ord, Generic, Read)
-data PieceType = K | Q | R | B | N | P deriving (Show, Eq, Generic, Ord)
-
-type Piece = (PieceType, Colour)
-
-type Rank = Int
-type File = Int
-type Square = (File, Rank)
-
-type Room = String
-type PlayerName = String
-type PlayerId = (Room, PlayerName)
-
-instance ToJSON Colour where
-instance FromJSON Colour where
-instance ToJSON PieceType where
-instance FromJSON PieceType where
-
-
-data Turn = Normal Int | Promoting Int Colour deriving (Show, Eq)
-
-pieceImage :: PieceType -> String
-pieceImage K = "king.svg"
-pieceImage Q = "queen.svg"
-pieceImage R = "rook.svg"
-pieceImage B = "bishop.svg"
-pieceImage N = "knight.svg"
-pieceImage P = "pawn.svg"
-
-moveNumber :: Turn -> Int
-moveNumber (Normal n) = n
-moveNumber (Promoting n _) = n
-
-type ChessBoard = M.Map Square Piece
-data ChessState = ChessState
-    { _board :: ChessBoard , _turn :: Turn, _castling :: S.Set Square
-    , _enpassant :: Maybe (Int, Square, Square) , _zeroing :: Int , _history :: M.Map ChessBoard Int
-    , _touch :: M.Map Colour (Square, Piece) , _players :: B.Bimap String Colour
-    , _promoting :: Maybe (Square, Piece)
-    , _running :: Bool , _closing :: Bool } deriving (Show, Eq)
-makeLenses ''ChessState
-
-
-chessInitial :: ChessState
-chessInitial = ChessState {
-        _board       = initialBoard,
-        _turn        = Normal 0,
-        _castling    = S.fromList [(0, 0), (4, 0), (7, 0), (0, 7), (4, 7), (7, 7)],
-        _enpassant   = Nothing,
-        _touch       = M.empty,
-        _zeroing     = 0,
-        _history     = M.empty,
-        _players     = B.empty,
-        _promoting   = Nothing,
-        _running     = True,
-        _closing     = False
-    }
-    where
-    initialFEN :: String
-    initialFEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
-
-    initialBoard :: ChessBoard
-    initialBoard = fromRight undefined $ parseFEN initialFEN
-
-
-toMove :: Getter ChessState (Maybe Colour)
-toMove = turn . to colour
-    where
-    colour :: Turn -> Maybe Colour
-    colour (Promoting _ _) = Nothing
-    colour (Normal x) | even x = Just White
-    colour (Normal _)          = Just Black
-
--- * Setup
-fenParser :: Parsec String Square ChessBoard
-fenParser = M.fromList . catMaybes <$> many tokenFEN
-    where
-    letters :: M.Map Char Piece
-    letters = M.fromList [
-            ('K', (K, White)),
-            ('Q', (Q, White)),
-            ('R', (R, White)),
-            ('B', (B, White)),
-            ('N', (N, White)),
-            ('P', (P, White)),
-            ('k', (K, Black)),
-            ('q', (Q, Black)),
-            ('r', (R, Black)),
-            ('b', (B, Black)),
-            ('n', (N, Black)),
-            ('p', (P, Black))
-        ]
-
-
-    tokenFEN :: Parsec String Square (Maybe (Square, Piece))
-    tokenFEN = choice [
-            parsePiece,
-            parseSkip,
-            parseLine
-        ]
-        where
-        parsePiece :: Parsec String Square (Maybe (Square, Piece))
-        parsePiece = do
-            p <- letter
-            (x , y) <- getState
-            putState (x + 1, y)
-
-            return $ ((x, y),) <$> M.lookup p letters
-
-        parseSkip :: Parsec String Square (Maybe (Square, Piece))
-        parseSkip = do
-            d <- digit
-            let n = (read [d] :: Int)
-            (x , y) <- getState
-            putState (x + n, y)
-
-            return Nothing
-
-        parseLine :: Parsec String Square (Maybe (Square, Piece))
-        parseLine = do
-            _ <- char '/'
-            (_ , y) <- getState
-            putState (0, y + 1)
-            return Nothing
-
-
-parseFEN :: String -> Either ParseError ChessBoard
-parseFEN = runParser fenParser (0 , 0) ""
-
--- * Evaluation
-recGame :: Game s e -> Runner s e
-recGame _ s [] = return s
-recGame g s (a : es) = case a of 
-    Event e -> do
-        let ((_ , s') , es') = runWriter (runStateT (g e) s)
-        s'' <- recGame g s' es'
-        recGame g s'' es
-    Effect e -> do
-        e 
-        recGame g s es
-
-fromEvent :: Action e -> Maybe e
-fromEvent (Event e) = Just e
-fromEvent _ = Nothing
-
-simulate :: Game s e -> s -> [e] -> s
-simulate _ s [] = s
-simulate g s (e : queue') =
-        let ((_ , s') , consequences) = runWriter (runStateT (g e) s) in
-        let s'' = simulate g s' (mapMaybe fromEvent consequences) in
-        simulate g s'' queue'
-
-simulateUntil :: (e -> Bool) -> Game s e -> s -> [e] -> (s , [e])
-simulateUntil _ _ s [] = (s , [])
-simulateUntil p g s queue@(e : queue')
-    | p e       = (s , queue)
-    | otherwise = 
-        let ((_ , s') , consequences) = runWriter (runStateT (g e) s) in
-        let (s'', remainder) = simulateUntil p g s' (mapMaybe fromEvent consequences) in
-        if null remainder then
-            simulateUntil p g s'' queue'
+registerRule :: (Typeable a, HasCallStack) => String -> Rule s a -> Game s -> Game s
+registerRule e r (es , rs) = let tr' = SomeTypeRep (argType r) in
+    case es ^. at e of
+    Nothing -> registerRule' e (SomeRule r) (es & at e ?~ tr' , rs)
+    Just tr -> if tr == tr' then
+            registerRule' e (SomeRule r) (es , rs)
         else
-            (s'' , remainder ++ queue')
-{-
-simulateUntilDbg :: Show e => (e -> Bool) -> Game s e -> s -> [e] -> IO (s , [e])
-simulateUntilDbg _ _ s [] = return  (s , [])
-simulateUntilDbg p g s queue@(e : queue')
-    | p e       = print e >> return (s , queue)
-    | otherwise = do
-        print e
-        let ((_ , s') , consequences) = runWriter (runStateT (g e) s)
-        (s'', remainder) <- simulateUntilDbg p g s' (mapMaybe fromEvent consequences)
-        if null remainder then
-            simulateUntilDbg p g s'' queue'
-        else
-            return (s'' , remainder ++ queue')
--}
+            error $ "Argument type " ++ show tr' ++ " does not match expected type "
+                                     ++ show tr ++ " for event " ++ e ++ " while registering"
+    where
+    registerRule' :: String -> SomeRule s -> Game s -> Game s
+    registerRule' e r (es , rs) = (es , rs & at e <>~ Just [r])
 
-type Runner s e = s -> [Action e] -> IO s
+runGame :: Game s -> Runner s
+runGame g@(events, rules) acts = do
+    forM_ acts $ \case
+        Event e (Dynamic ta a) -> do
+            forM_ (M.findWithDefault [] e rules) $ \ (SomeRule @tr rule) -> do
+                case eqTypeRep ta (TypeRep @tr) of
+                    Nothing -> do
+                        _ <- error $ "Actual event type " ++ show ta ++ " of " ++ e ++ " does not match expected type " ++ show (TypeRep @tr) ++ " while running"
+                        return ()
+                    Just HRefl -> do
+                        s_ <- get
+                        let ((_ , s_') , acts') = runWriter $ flip runReaderT events $ flip runStateT s_ $ rule a
+                        put s_'
+                        runGame g acts'
+        Effect ef -> liftIO ef
 
-runGame :: Runner s e -> IO e -> s -> IO s
-runGame runner input s = do
+runGame' :: Game s -> Runner' s
+runGame' g s acts = execStateT (runGame g acts) s
+
+type Simulator s = [Action] -> s -> s
+
+simGameUntil :: (Action -> Bool) -> Game s -> [Action] -> s -> Either (s , Action) s
+simGameUntil _ _                 []           s = Right s
+simGameUntil p g@(events, rules) (act : acts) s
+    | p act = Left (s , act)
+    | otherwise = case act of
+        Event e (Dynamic ta a) -> do
+            s' <- foldrM go s (M.findWithDefault [] e rules)
+            simGameUntil p g acts s'
+            where
+            go (SomeRule @tr rule) s' = case eqTypeRep ta (TypeRep @tr) of
+                Nothing -> do
+                    error $ "Actual event type " ++ show ta ++ " of " ++ e ++ " does not match expected type " ++ show (TypeRep @tr)
+                Just HRefl -> do
+                    let ((_ , s'') , acts') = runWriter $ flip runReaderT events $ flip runStateT s' $ rule a
+                    simGameUntil p g acts' s''
+        Effect _ -> simGameUntil p g acts s
+
+runGameIO :: Runner' s -> IO Action -> s -> IO s
+runGameIO runner input s = do
     e <- input
-    s' <- runner s [Event e]
-    runGame runner input s'
+    s' <- runner s [e]
+    runGameIO runner input s'
 
 
+-- * Examples
 
-data ChessOutMessage = Board (M.Map Square (String , Colour)) | Tile Square (Maybe (String , Colour)) String | Turn Colour
-    | Status String | Promotion | MarkAvailableMove Square | ClearAvailableMoves deriving (Show, Eq, Generic)
+startRule :: Rule String ()
+startRule () = do
+    currTxt <- get
+    effect $ putStrLn $ "starting on: " ++ currTxt
+    put "new state"
+    cause "end" "started"
 
-instance ToJSON ChessOutMessage where
-instance FromJSON ChessOutMessage where
+endRule :: Rule String String
+endRule txt = do
+    currTxt <- get
+    effect $ putStrLn $ "ending with: " ++ txt ++ ", on: " ++ currTxt
+    cause "ended" ()
+
+myGame :: Game String
+myGame = mempty
+    & registerEvent "start" (SomeTypeRep $ TypeRep @())
+    & registerEvent "end" (SomeTypeRep $ TypeRep @String)
+    & registerEvent "ended" (SomeTypeRep $ TypeRep @())
+    & registerRule "start" startRule
+    & registerRule "end" endRule
+
+myGameTest :: IO String
+myGameTest = runGame' myGame "initial state" [mkEvent "start" ()]
+
+{-
+This is doomed unless you go all the way and internalize variables, conditionals, etc...
+
+data ActionF s a where
+    EventF :: String -> Dynamic -> ActionF s ()
+    EffectF :: IO () -> ActionF s ()
+    AskF :: ActionF s a
+    GetF :: ActionF s s
+    BindF :: ActionF s a -> (a -> ActionF s b) -> ActionF s b
+    CondF :: ActionF 
+-}
+{-
+deriving instance Functor (ActionF a)
+type Rule' s a = FreeT ActionF (ReaderT a (StateT s (Reader Events))) ()
 
 
-data ChessEvent = UncheckedMove Square Square | UncheckedMovePiece Piece Square Square | UncheckedMoveType Piece PieceType (Maybe Piece) Square Square
-    | Touch Colour Square | Touch1 Colour Square | Touch1Turn Colour Square | Touch1Piece Colour Piece Square | Touch2 Piece Square Square
-    | CheckedMovePiece Piece Square Square | Take Piece Square | RawMove Piece Square Square
-    | Move Piece Square Square | Capture Piece Square Square | PromotionCheck Colour Square Piece
-    | NonCapture Piece Square Square | Set Square Piece | PrintBoard
-    | TimedOut Colour | PlayerConnected Colour
-    | SendBoard Colour | SendTile Colour Square | SendDrawTile Colour Square (Maybe Piece) String | SendBoardAll | SendTileAll Square | PutTile Square (Maybe Piece)
-    | SendSelect Colour Square Bool | NextSubTurn | Zeroing
-    | SendTurn Colour | SendRaw [Colour] ChessOutMessage | MoveEnd | Win Colour | Draw | PlayerDisconnected Colour
-    | CloseRoom | TestCloseRoom | UpdateSelection Colour Square | SendPromotionPrompt Colour | Promote Colour String
-    | NextTurn | SendMarkAvailableMove Colour Square | SendClearAvailableMoves Colour 
-    | UncheckedMoveSelf Piece Square Square | UncheckedMoveTurn Piece Square Square deriving Show
-
-
-
+myRule :: Rule' String Int
+myRule = do
+    _ <- FreeT $ do
+        x <- ask
+        lift $ do
+            y <- get
+            lift $ do
+                lift $ do
+                    return $ Free $ EventF y (toDyn x)
+    return ()
+-}

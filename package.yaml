@@ -46,8 +46,17 @@ library:
   - unbounded-delays
   - aeson
   - bimap
+  - text
   - stm
   - bytestring
+  - dependent-map
+  - free
+  - constraints-extras
+  - dependent-sum
+  - dependent-sum-template
+  - singletons
+  - singletons-base
+
 
 executables:
   hchess-exe:
