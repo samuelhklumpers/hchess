@@ -1,5 +1,8 @@
 {-# LANGUAGE TypeFamilies, OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Chess.Rules  ( module Chess.Game , module Chess.Rules ) where
 
@@ -7,10 +10,10 @@ import qualified Data.Map as M
 import qualified Data.Set as S
 import qualified Data.Bimap as B
 
-import Data.Maybe (isNothing, isJust, fromJust)
+import Data.Maybe (isNothing, isJust, fromJust, mapMaybe, fromMaybe)
 import Control.Monad.Trans.State.Lazy ( get )
 import Control.Lens ( use, (%=), (.=), at, (?=), to , _1 , (.~) )
-import Control.Monad (when, forM_, unless)
+import Control.Monad (when, forM_)
 import Data.List (uncons)
 import Network.WebSockets
     ( Connection, sendBinaryData )
@@ -27,9 +30,13 @@ import Control.Monad.Trans.Except (runExceptT, throwE)
 import Control.Monad.Trans.Class (lift)
 import Data.Bifunctor (first)
 import GHC.Natural (Natural)
-import Data.Either (isLeft)
+import Data.Either (isLeft, fromLeft, fromRight)
 import GHC.Stack (HasCallStack)
 import Data.Typeable (Typeable)
+import Data.Function (fix)
+import Data.Proxy (Proxy (..))
+import Data.Dynamic (fromDynamic)
+import Control.Monad.Trans.Maybe (runMaybeT)
 
 
 -- * Rules
@@ -92,9 +99,6 @@ touch1Turn (PlayerTouch c x) = do
     currentToMove <- use toMove
     when (currentToMove == Just c) $ do
         cause "Touch1Turn" (PlayerTouch c x)
-
-touch1TurnRTS :: HasCallStack => Chess PlayerTouch
-touch1TurnRTS (PlayerTouch c x) = cause "Touch1Turn" (PlayerTouch c x)
 
 -- If `x` does not contain a piece, then don't
 touch1Piece :: HasCallStack => Chess PlayerTouch
@@ -474,10 +478,10 @@ movePrintBoard () = cause "PrintBoard" ()
 printBoard :: Chess ()
 printBoard () = use board >>= effect . putStrLn . ppBoard >> effect (putStrLn "")
 
-idRule :: Typeable a => String -> Chess a
+idRule :: (Typeable a, HasCallStack) => String -> Chess a
 idRule = cause
 
-atomicExplosion :: [(Int, Int)] -> Chess Capture
+atomicExplosion :: HasCallStack => [(Int, Int)] -> Chess Capture
 atomicExplosion offsets (Capture p _ (x , y) _) = do
     forM_ offsets $ \ (dx , dy) -> do
         let b = (x + dx , y + dy)
@@ -486,26 +490,29 @@ atomicExplosion offsets (Capture p _ (x , y) _) = do
             when (fst target /= P || dx == 0 && dy == 0) $
                 cause "Take" $ Take p b target
 
-{-
-mayCapture :: ChessEvent -> Maybe MayCapture
-registerRule "NonCapture" mayCapture
-mayCapture (p, a, b) = Just (p , a , b , Nothing)
-registerRule "Capture" mayCapture
-mayCapture (p, a, b, q) = Just (p , a , b , Just q)
+mayCapture :: Action -> Maybe (Either Move Capture)
+mayCapture (Event "NonCapture" arg) = do
+    (PieceMove _ a b) <- fromDynamic arg
+    return $ Left $ Move a b
+mayCapture (Event "Capture" arg) = do
+    (Capture p a b q) <- fromDynamic arg
+    return $ Right $ Capture p a b q
 mayCapture _ = Nothing
 
 type MayCapture = (Piece , Square , Square , Maybe Piece)
 
-checkEvents :: (e -> Maybe a) -> Game s e -> s -> [e] -> Maybe a
-checkEvents p runner st es = do
-    e <- fmap fst $ uncons $ snd $ simulateUntil (isJust . p) runner st es
+turnStart :: HasCallStack => Chess a
+turnStart _ = cause "TurnStart" ()
+
+checkEvents :: (Action -> Maybe a) -> Game s -> s -> [Action] -> Maybe a
+checkEvents p runner st acts = do
+    e <- either (Just . snd) (const Nothing) $ simGameUntil (isJust . p) runner acts st
     p e -- TODO undouble work by inlining into simulateUntil?
 
-checkEventss :: (e -> Maybe a) -> Game s e -> s -> [[e]] -> [a]
-checkEventss p runner st = mapMaybe (checkEvents p runner st)
+markMoves :: Typeable a => (Game ChessState -> Game ChessState) -> String -> String -> Proxy a -> Chess ()
+markMoves g bypassStart bypassEnd (Proxy @a) () = do
+    let bypassRules = fix $ overwriteRule bypassStart (idRule bypassEnd :: Chess a) . g
 
-markMoves :: Chess -> Chess
-markMoves runner NextTurn = do
     currentTurn <- use toMove
     st <- get
 
@@ -513,10 +520,24 @@ markMoves runner NextTurn = do
         pieces <- filter (\ (_ , (_ , c')) -> c == c') . M.toList <$> use board
 
         let tiles = [(i, j) | i <- [0..7], j <- [0..7]]
-        let allMoves = [[UncheckedMovePiece p a b] | (a, p) <- pieces , b <- tiles ]
-        let validMoves = checkEventss mayCapture runner st allMoves
+        let allMoves = [(p, a, b) | (a, p) <- pieces , b <- tiles ]
+        let allMoves' = [[mkEvent "UncheckedMovePiece" $ PieceMove p a b] | (p, a, b) <- allMoves ]
+        
+        let validMoves = mapMaybe (checkEvents mayCapture bypassRules st) allMoves'
+        
+        --effect $ print validMoves
 
-        moveCache . at c ?= fmap (\ (p , a , b , _) -> (p , a , b)) validMoves
-        captureCache . at c ?= mapMaybe (\case (p , a , b , Just q) -> Just ((p , a , b) , q) ; _ -> Nothing) validMoves
+        moveCache . at c ?= fmap (either id $ \ (Capture _ a b _) -> Move a b) validMoves
+        captureCache . at c ?= mapMaybe (either (const Nothing) Just) validMoves
 
--}
+checkers :: HasCallStack => Chess PieceMove
+checkers (PieceMove p x y) = do
+    currentTurn <- use toMove
+    whenJust currentTurn $ \ c -> do
+        maybeCaptures <- use $ captureCache . at c
+        let captures = fromMaybe [] maybeCaptures
+        let moves = map ( \ (Capture _ a b _) -> (a , b)) captures
+
+        when (null captures || (x, y) `elem` moves) $ do
+            cause "UncheckedMoveCheckers" (PieceMove p x y)
+

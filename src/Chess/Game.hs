@@ -17,8 +17,9 @@ import Control.Monad.IO.Class (liftIO)
 import Data.Function ((&))
 import Control.Lens ((?~), at, (<>~), (^.))
 import Data.Foldable (foldrM)
-import GHC.Stack (HasCallStack)
+import GHC.Stack (HasCallStack, callStack, prettyCallStack)
 import GHC.IO (unsafePerformIO)
+import Debug.Trace (trace)
 
 
 -- * Events, Rules, and Games
@@ -29,6 +30,9 @@ type Rule s a = a -> Consequence s ()
 
 argType :: Typeable a => Rule s a -> TypeRep a
 argType _ = TypeRep
+
+someArgType :: SomeRule s -> SomeTypeRep
+someArgType (SomeRule r) = SomeTypeRep $ argType r
 
 data SomeRule s where
     SomeRule :: Typeable a => Rule s a -> SomeRule s
@@ -50,10 +54,7 @@ cause e a = lift $ do
     --seq (unsafePerformIO $ putStrLn e) (return ())
 
     case M.lookup e es of
-        Nothing -> do
-            seq
-                (unsafePerformIO $ putStrLn $ "Unregistered event: " ++ e)
-                (return ())
+        Nothing -> trace ("Unregistered event: " ++ e ++ " in\n" ++ prettyCallStack callStack) (return ())
         Just (SomeTypeRep t)  -> case eqTypeRep t (typeOf a) of
             Nothing -> error $ "Argument type " ++ show (typeOf a) ++ " does not match expected type " ++ show t ++ " for event " ++ e ++ " while running!"
             Just HRefl -> lift $ tell [mkEvent e a]
@@ -76,6 +77,36 @@ registerRule e r (es , rs) = let tr' = SomeTypeRep (argType r) in
     where
     registerRule' :: String -> SomeRule s -> Game s -> Game s
     registerRule' e r (es , rs) = (es , rs & at e <>~ Just [r])
+
+registerRules :: HasCallStack => String -> [SomeRule s] -> Game s -> Game s
+registerRules e rs' (es , rs) = let trs = map someArgType rs' in
+    case es ^. at e of
+    Nothing -> case rs' of
+        (r : rs'') -> if all ((== someArgType r) . someArgType) rs'' then
+                registerRules' e rs' (es & at e ?~ someArgType r , rs)
+            else
+                error $ "Argument types " ++ show trs ++ " do not match"
+        [] -> (es, rs)
+    Just tr -> if all (tr ==) trs then
+            registerRules' e rs' (es , rs)
+        else
+            error $ "Argument types " ++ show trs ++ " do not match expected type "
+                                     ++ show tr ++ " for event " ++ e ++ " while registering"
+    where
+    registerRules' :: String -> [SomeRule s] -> Game s -> Game s
+    registerRules' e rs' (es , rs) = (es , rs & at e <>~ Just rs')
+
+overwriteRule :: (Typeable a) => String -> Rule s a -> Game s -> Game s
+overwriteRule e r (es , rs) = let tr' = SomeTypeRep (argType r) in
+    registerRule' e (SomeRule r) (es & at e ?~ tr' , rs)
+    where
+    registerRule' :: String -> SomeRule s -> Game s -> Game s
+    registerRule' e r (es , rs) = (es , rs & at e ?~ [r])
+
+spliceRule :: (Typeable a, HasCallStack) => String -> String -> Rule s a -> Game s -> Game s
+spliceRule old new r game@(_, rs) = game
+    & registerRules new (M.findWithDefault [] old rs)
+    & overwriteRule old r
 
 runGame :: Game s -> Runner s
 runGame g@(events, rules) acts = do
