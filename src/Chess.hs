@@ -10,7 +10,7 @@ import Text.Parsec
       Parsec )
 import Text.Parsec.Token (natural)
 
-import Control.Lens ( at, view, (&), (?~), (%~), over )
+import Control.Lens ( at, view, (&), (?~), (%~), over , _2, _1 )
 import Control.Monad (forever, unless)
 import Text.Parsec.Language (haskell)
 import Network.WebSockets
@@ -41,6 +41,9 @@ import Chess.Internal
 import Chess.Structure
 import Chess.Rules
 import Control.Concurrent (myThreadId, ThreadId)
+import qualified Data.Set as S
+import Data.Function (fix)
+import Debug.Trace (trace)
 
 
 chess' :: HasCallStack => Game ChessState -> Game ChessState
@@ -110,8 +113,28 @@ chess' self = mempty
     & registerRule "SendClearAvailableMoves" serveClearAvailableMoves
 
     & registerRule "MoveEnd" movePrintBoard
-    -- & registerRule "PrintBoard" printBoard
+    & registerRule "PrintBoard" printBoard
 
+
+--data ChessOpts = Atomic -- | Checkers | SelfCapture
+--    deriving (Show, Ord, Eq, Generic)
+
+type ChessOpts = String
+
+atomicDefaults :: [(Int, Int)]
+atomicDefaults =
+    [ (-1 , -1), ( 0,  -1), ( 1 , -1)
+    , (-1 ,  0), ( 0 ,  0), ( 1 ,  0)
+    , (-1 ,  1), ( 0 ,  1), ( 1 ,  1)]
+
+applyChessOpt :: ChessOpts -> Game ChessState -> Game ChessState
+applyChessOpt "Atomic" = registerRule "Capture" (atomicExplosion atomicDefaults)
+applyChessOpt opt = trace ("Unrecognized option: " ++ opt)
+--applyChessOpt Checkers = spliceRule "UncheckedMoveSelf" "UncheckedMoveCheckers" checkers
+--applyChessOpt SelfCapture = overwriteRule "UncheckedMoveTurn" (idRule "UncheckedMoveSelf")
+
+chessWithOpts :: S.Set ChessOpts -> Game ChessState
+chessWithOpts opts = fix $ S.foldl' (\ f -> (f .) . applyChessOpt) chess' opts
 
 chess :: Game ChessState
 chess = chess' chess
@@ -139,7 +162,10 @@ chessAtomic = chess
 secondUs :: Integer
 secondUs = 1000 * 1000
 
-data ChessMessage = TouchMsg Square | Register String String | PromoteMsg String deriving (Show, Eq, Generic)
+data ChessMessage = TouchMsg Square | Register String String [ChessOpts] | PromoteMsg String deriving (Show, Eq, Generic)
+
+--instance ToJSON ChessOpts
+--instance FromJSON ChessOpts
 
 instance ToJSON ChessMessage where
 instance FromJSON ChessMessage where
@@ -151,8 +177,8 @@ interpretMessage _ _ = Nothing
 
 
     -- & registerRule "SendRaw " (serverRule _)
-chessApp :: TMVar (M.Map PlayerId Connection) -> TMVar (M.Map String (TMVar ChessState)) -> ThreadId -> ServerApp
-chessApp connRef refGames serverThreadId pending = handle (throwTo serverThreadId :: SomeException -> IO ()) $ do 
+chessApp :: TMVar (M.Map PlayerId Connection) -> TMVar (M.Map String (TMVar (ChessState, Game ChessState))) -> ThreadId -> ServerApp
+chessApp connRef refGames serverThreadId pending = handle (throwTo serverThreadId :: SomeException -> IO ()) $ do
     -- dirtiest of hacks but please give my callstacks back ^
     conn <- acceptRequest pending
 
@@ -160,18 +186,18 @@ chessApp connRef refGames serverThreadId pending = handle (throwTo serverThreadI
     let maybeRoom = maybeMsg >>= decode . fromDataMessage
 
     whenJust maybeRoom $ \case
-        Register room ident -> do
+        Register room ident opts -> do
             games <- atomically $ readTMVar refGames
 
             refGame <- case view (at room) games of
                 Just refGame -> return refGame
                 Nothing -> do
-                    refGame <- newTMVarIO chessInitial
+                    refGame <- newTMVarIO (chessInitial, chessWithOpts (S.fromList opts))
                     atomically $ writeTMVar refGames (games & at room ?~ refGame)
                     return refGame
 
             game <- atomically $ readTMVar refGame
-            let playerMap = view players game
+            let playerMap = view (_1 . players) game
 
             maybeColour <- case B.lookup ident playerMap of
                 Just colour -> return $ Just colour
@@ -179,25 +205,29 @@ chessApp connRef refGames serverThreadId pending = handle (throwTo serverThreadI
                     Just _  -> case B.lookupR Black playerMap of
                         Just _  -> return Nothing
                         Nothing -> do
-                            atomically $ writeTMVar refGame (game & players %~ B.insert ident Black)
+                            atomically $ writeTMVar refGame (game & _1 . players %~ B.insert ident Black)
                             return $ Just Black
                     Nothing -> do
-                        atomically $ writeTMVar refGame (game & players %~ B.insert ident White)
+                        atomically $ writeTMVar refGame (game & _1 . players %~ B.insert ident White)
                         return $ Just White
 
-            whenJust maybeColour $ \ colour -> mainloop colour (room , ident) refGame conn
+            let runner = runGame' $ view _2 game
+                    & registerRule "CloseRoom" (roomRule refGames room)
+                    & registerRule "SendRaw" (serverRule connRef)
+
+            whenJust maybeColour $ \ colour -> mainloop colour (room , ident) refGame conn runner
         _ -> return ()
 
     where
-    mainloop :: Colour -> PlayerId -> TMVar ChessState -> Connection -> IO ()
-    mainloop colour ident@(room , _) st conn = do
+    mainloop :: Colour -> PlayerId -> TMVar (ChessState , Game ChessState) -> Connection -> Runner' ChessState -> IO ()
+    mainloop colour ident st conn runner = do
         withTMVarIO connRef (return . M.insert ident conn)
-        withTMVarIO st (return . over connections (M.insert colour ident))
+        withTMVarIO st (return . over (_1 . connections) (M.insert colour ident))
 
-        withTMVarIO st (`runner` [Event "PlayerConnected" $ toDyn colour])
+        withTMVarIO st $ _1 (`runner` [Event "PlayerConnected" $ toDyn colour])
 
         _ <- runMaybeT $ forever $ do
-            isRunning <- view running <$> liftIO (atomically $ readTMVar st)
+            isRunning <- view (_1 . running) <$> liftIO (atomically $ readTMVar st)
             unless isRunning $ hoistMaybe Nothing
 
             maybeMsg <- lift $ catch (timeout (10 * 60 * secondUs) $ receiveDataMessage conn) $
@@ -205,18 +235,13 @@ chessApp connRef refGames serverThreadId pending = handle (throwTo serverThreadI
 
             case maybeMsg of
                 Nothing  -> do
-                    lift $ withTMVarIO st (`runner` [Event "PlayerDisconnected" $ toDyn colour])
+                    lift $ withTMVarIO st $ _1 (`runner` [Event "PlayerDisconnected" $ toDyn colour])
                     hoistMaybe Nothing
                 Just msg -> do
                     let maybeEvent = decode (fromDataMessage msg) >>= interpretMessage colour
 
-                    whenJust maybeEvent $ \ ev -> lift $ withTMVarIO st (`runner` [ev])
-
+                    whenJust maybeEvent $ \ ev -> lift $ withTMVarIO st $ _1 (`runner` [ev])
         withTMVarIO connRef (return . M.delete ident)
-            where
-            runner = runGame' $ chess
-                & registerRule "CloseRoom" (roomRule refGames room)
-                & registerRule "SendRaw" (serverRule connRef)
 
 chessServer :: Int -> IO ()
 chessServer port = do

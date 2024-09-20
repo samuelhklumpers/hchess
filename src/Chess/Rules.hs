@@ -29,6 +29,7 @@ import Data.Bifunctor (first)
 import GHC.Natural (Natural)
 import Data.Either (isLeft)
 import GHC.Stack (HasCallStack)
+import Data.Typeable (Typeable)
 
 
 -- * Rules
@@ -58,7 +59,7 @@ markAvailableMoves g (PlayerTouch c _) = do
     -- PS: you might not want to cause UpdateSelection in your simulation
     maybeSelected <- use $ touch . at c
     currentState <- get
-    
+
     whenJust maybeSelected $ \ (a , _) ->
         forM_ [(i, j) | i <- [0..7], j <- [0..7]] $ \ b -> do
             let res = simGameUntil isCheckedMove g [mkEvent "UncheckedMove" $ Move a b] currentState
@@ -135,7 +136,7 @@ uncheckedMoveSelf (PieceMove p x y) = do
 
 specializeMove :: HasCallStack => Chess PieceMove
 specializeMove (PieceMove p x y) = do
-    let e = "Unchecked" ++ show (fst p) ++ "Move" 
+    let e = "Unchecked" ++ show (fst p) ++ "Move"
     cause e $ PieceMove p x y
 
 kingMove :: HasCallStack => Chess PieceMove
@@ -290,7 +291,7 @@ putTile :: HasCallStack => Chess PutTile
 putTile (PutTile x p) = do
     board . at x .= p
     cause "SendTileAll" x
-    
+
 moveStep :: ChessState -> Turn -> Turn
 moveStep st t = case _promoting st of
     Just (_, (_, c)) -> Promoting (moveNumber t) c
@@ -413,7 +414,7 @@ serveDrawTileAll :: HasCallStack => Chess Square
 serveDrawTileAll a = do
     cause "SendTile" (White, a)
     cause "SendTile" (Black, a)
-                
+
 sendTile :: HasCallStack => Chess (Colour , Square)
 sendTile (c, x) = do
     piece <- use $ board . at x
@@ -441,7 +442,7 @@ serveMarkAvailableMove :: HasCallStack => Chess (Colour , Square)
 serveMarkAvailableMove (c, a) = do
     cause "SendRaw" $ SendRaw [c] (MarkAvailableMove a)
 
-serveClearAvailableMoves :: HasCallStack => Chess Colour 
+serveClearAvailableMoves :: HasCallStack => Chess Colour
 serveClearAvailableMoves c = do
     cause "SendRaw" $ SendRaw [c] ClearAvailableMoves
 
@@ -454,7 +455,7 @@ serverRule connRef (SendRaw cs d) = do
             whenJust (M.lookup c connMap >>= \ x -> M.lookup x conns) $ \ conn -> do
                 sendBinaryData conn $ encode d
 
-roomRule :: TMVar (M.Map String (TMVar ChessState)) -> String -> Rule ChessState ()
+roomRule :: TMVar (M.Map String (TMVar (ChessState, Game ChessState))) -> String -> Rule ChessState ()
 roomRule refGames room () = do
     effect $ withTMVarIO refGames (return . M.delete room)
     running .= False
@@ -464,6 +465,17 @@ movePrintBoard () = cause "PrintBoard" ()
 
 printBoard :: Chess ()
 printBoard () = use board >>= effect . putStrLn . ppBoard >> effect (putStrLn "")
+
+idRule :: Typeable a => String -> Chess a
+idRule = cause
+
+atomicExplosion :: [(Int, Int)] -> Chess Capture
+atomicExplosion offsets (Capture p _ (x , y) _) = do
+    forM_ offsets $ \ (dx , dy) -> do
+        let b = (x + dx , y + dy)
+        maybeTarget <- use $ board . at b
+        whenJust maybeTarget $ \ target -> do
+            cause "Take" $ Take p b target
 
 {-
 mayCapture :: ChessEvent -> Maybe MayCapture
