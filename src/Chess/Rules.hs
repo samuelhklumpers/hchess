@@ -10,7 +10,7 @@ import qualified Data.Bimap as B
 import Data.Maybe (isNothing, isJust, fromJust)
 import Control.Monad.Trans.State.Lazy ( get )
 import Control.Lens ( use, (%=), (.=), at, (?=), to , _1 , (.~) )
-import Control.Monad (when, forM_)
+import Control.Monad (when, forM_, unless)
 import Data.List (uncons)
 import Network.WebSockets
     ( Connection, sendBinaryData )
@@ -483,7 +483,8 @@ atomicExplosion offsets (Capture p _ (x , y) _) = do
         let b = (x + dx , y + dy)
         maybeTarget <- use $ board . at b
         whenJust maybeTarget $ \ target -> do
-            cause "Take" $ Take p b target
+            when (fst target /= P || dx == 0 && dy == 0) $
+                cause "Take" $ Take p b target
 
 {-
 mayCapture :: ChessEvent -> Maybe MayCapture

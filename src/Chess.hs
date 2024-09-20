@@ -136,8 +136,9 @@ applyChessOpt opt = trace ("Unrecognized option: " ++ opt)
 --applyChessOpt Checkers = spliceRule "UncheckedMoveSelf" "UncheckedMoveCheckers" checkers
 --applyChessOpt SelfCapture = overwriteRule "UncheckedMoveTurn" (idRule "UncheckedMoveSelf")
 
-chessWithOpts :: S.Set ChessOpts -> Game ChessState
-chessWithOpts opts = fix $ S.foldl' (\ f -> (f .) . applyChessOpt) chess' opts
+chessWithOpts :: [ChessOpts] -> (Game ChessState -> Game ChessState) -> Game ChessState
+chessWithOpts []           base = fix base
+chessWithOpts (opt : opts) base = chessWithOpts opts $ \ self -> applyChessOpt opt (base self)
 
 chess :: Game ChessState
 chess = chess' chess
@@ -190,7 +191,7 @@ instance Eq Connection where
 
 chessApp :: TMVar (M.Map String (TMVar (M.Map Colour [Connection]))) -> TMVar (M.Map String (TMVar (ChessState, Game ChessState))) -> ThreadId -> ServerApp
 chessApp refRefConn refRefGame serverThreadId pending = handle (throwTo serverThreadId :: SomeException -> IO ()) $ void (runMaybeT acceptor)
-    -- dirtiest of hacks but please give my callstacks back ^
+    -- dirtiest of hacks but please give me my callstacks back ^
     where
     acceptor :: MaybeT IO ()
     acceptor = do
@@ -199,7 +200,11 @@ chessApp refRefConn refRefGame serverThreadId pending = handle (throwTo serverTh
 
         (room, ident, colour, opts) <- hoistMaybe $ decode (fromDataMessage msg) >>= fromRegister
 
-        refGame <- liftIO $ withTMVarIO refRefGame $ setdefaultM room $ newTMVarIO (chessInitial, chessWithOpts (S.fromList opts))
+        --liftIO $ print opts
+        let ruleset = chessWithOpts opts chess'
+        --rnf ruleset
+
+        refGame <- liftIO $ withTMVarIO refRefGame $ setdefaultM room $ newTMVarIO (chessInitial, ruleset)
         refConn <- liftIO $ withTMVarIO refRefConn $ \ connRefM -> do
             case M.lookup room connRefM of
                 Nothing     -> do

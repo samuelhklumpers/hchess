@@ -47,7 +47,7 @@ cause :: (Typeable a, HasCallStack) => String -> a -> Consequence s ()
 cause e a = lift $ do
     es <- ask
 
-    seq (unsafePerformIO $ putStrLn e) (return ())
+    --seq (unsafePerformIO $ putStrLn e) (return ())
 
     case M.lookup e es of
         Nothing -> do
