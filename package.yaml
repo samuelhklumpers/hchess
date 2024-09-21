@@ -37,25 +37,14 @@ library:
   source-dirs: src
   dependencies:
   - containers
-  - parsec
   - transformers
   - lens
-  - wai
-  - websockets
-  - wai-websockets
-  - unbounded-delays
+  - parsec
   - aeson
   - bimap
-  - text
   - stm
-  - bytestring
-  - dependent-map
-  - free
-  - constraints-extras
-  - dependent-sum
-  - dependent-sum-template
-  - singletons
-  - singletons-base
+  - websockets
+  - unbounded-delays
 
 
 executables:

@@ -41,23 +41,12 @@ library
       aeson
     , base >=4.7 && <5
     , bimap
-    , bytestring
-    , constraints-extras
     , containers
-    , dependent-map
-    , dependent-sum
-    , dependent-sum-template
-    , free
     , lens
     , parsec
-    , singletons
-    , singletons-base
     , stm
-    , text
     , transformers
     , unbounded-delays
-    , wai
-    , wai-websockets
     , websockets
   default-language: Haskell2010
 

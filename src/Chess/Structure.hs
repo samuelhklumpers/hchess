@@ -36,7 +36,6 @@ type File = Int
 
 type Square = (File, Rank)
 
-    
 data PlayerTouch = PlayerTouch Colour Square deriving (Show, Eq, Typeable)
 data PlayerSelect = PlayerSelect Colour Square Bool deriving (Show, Eq, Typeable)
 type HTMLColour = String
@@ -68,25 +67,21 @@ instance FromJSON PieceType where
 
 data Turn = Normal Int | Promoting Int Colour deriving (Show, Eq)
 
-pieceImage :: PieceType -> String
-pieceImage K = "king.svg"
-pieceImage Q = "queen.svg"
-pieceImage R = "rook.svg"
-pieceImage B = "bishop.svg"
-pieceImage N = "knight.svg"
-pieceImage P = "pawn.svg"
-
-moveNumber :: Turn -> Int
-moveNumber (Normal n) = n
-moveNumber (Promoting n _) = n
+type Touch = M.Map Colour (Square, Piece)
+type Castling = S.Set Square
+type EnPassant = Maybe (Int, Square, Square, Piece)
+type Promoting = Maybe (Square, Piece)
+type History = M.Map ChessBoard Int
+type MoveCache = M.Map Colour [Move]
+type CaptureCache = M.Map Colour [Capture]
 
 type ChessBoard = M.Map Square Piece
 data ChessState = ChessState
-    { _board :: ChessBoard , _turn :: Turn, _castling :: S.Set Square
-    , _enpassant :: Maybe (Int, Square, Square, Piece) , _zeroing :: Int , _history :: M.Map ChessBoard Int
-    , _touch :: M.Map Colour (Square, Piece) , _players :: B.Bimap String Colour
-    , _promoting :: Maybe (Square, Piece)
-    , _moveCache :: M.Map Colour [Move], _captureCache :: M.Map Colour [Capture]
+    { _board :: ChessBoard , _turn :: Turn, _castling :: Castling
+    , _enpassant :: EnPassant , _zeroing :: Int , _history :: History
+    , _touch :: Touch , _players :: B.Bimap String Colour
+    , _promoting :: Promoting
+    , _moveCache :: MoveCache, _captureCache :: M.Map Colour [Capture]
     , _running :: Bool , _closing :: Bool } deriving (Show, Eq)
 makeLenses ''ChessState
 
@@ -118,13 +113,29 @@ chessInitial = ChessState {
     initialBoard :: ChessBoard
     initialBoard = fromRight undefined $ parseFEN initialFEN
 
+pieceImage :: PieceType -> String
+pieceImage K = "king.svg"
+pieceImage Q = "queen.svg"
+pieceImage R = "rook.svg"
+pieceImage B = "bishop.svg"
+pieceImage N = "knight.svg"
+pieceImage P = "pawn.svg"
+
+moveNumber :: Turn -> Int
+moveNumber (Normal n) = n
+moveNumber (Promoting n _) = n
+
 toMove :: Getter ChessState (Maybe Colour)
-toMove = turn . to colour
-    where
-    colour :: Turn -> Maybe Colour
-    colour (Promoting _ _) = Nothing
-    colour (Normal x) | even x = Just White
-    colour (Normal _)          = Just Black
+toMove = turn . to turnColour
+
+moveNumberColour :: Int -> Colour
+moveNumberColour i | even i = White
+moveNumberColour _ = Black
+
+turnColour :: Turn -> Maybe Colour
+turnColour (Promoting _ _) = Nothing
+turnColour (Normal x) | even x = Just White
+turnColour (Normal _)          = Just Black
 
 fenParser :: Parsec String Square ChessBoard
 fenParser = M.fromList . catMaybes <$> many tokenFEN
@@ -201,10 +212,10 @@ rookPath (ax, ay) (bx, by)
   | ay == by = [(, ay) <$> enumFromTo' ax bx]
   | otherwise = []
 
-pathIsEmpty :: ChessState -> [Square] -> Bool
-pathIsEmpty s xs = null $ mapMaybe (\ a -> s ^. board . at a) xs
+pathIsEmpty :: ChessBoard -> [Square] -> Bool
+pathIsEmpty s xs = null $ mapMaybe (\ a -> s ^. at a) xs
 
-rookP :: ChessState -> Square -> Square -> Bool
+rookP :: ChessBoard -> Square -> Square -> Bool
 rookP s a b = any (pathIsEmpty s) $ rookPath a b
 
 bishopPath :: Square -> Square -> [[Square]]
@@ -212,7 +223,7 @@ bishopPath (ax, ay) (bx, by)
   | abs (bx - ax) == abs (by - ay) = [zip (enumFromTo' ax bx) (enumFromTo' ay by)]
   | otherwise = []
 
-bishopP :: ChessState -> Square -> Square -> Bool
+bishopP :: ChessBoard -> Square -> Square -> Bool
 bishopP s a b = any (pathIsEmpty s) $ bishopPath a b
 
 knightP :: Square -> Square -> Bool

@@ -9,7 +9,7 @@ import qualified Data.Bimap as B
 import qualified Data.Map as M
 import qualified Data.List as L
 
-import Control.Lens ( at, view, (&), (?~), (%~) , _2, _1, (^.) )
+import Control.Lens ( at, view, (&), (?~), (%~) , _2, _1, (^.), Zoom (zoom), united, Lens' )
 import Control.Monad (forever, unless, ap)
 import Network.WebSockets
     ( acceptRequest,
@@ -42,78 +42,102 @@ import Network.WebSockets.Connection (connectionSentClose)
 import Data.Functor (void)
 import Data.Proxy (Proxy(..))
 
+{-boardCastle :: Lens' ChessState (ChessBoard, Castling)
+boardCastle f s = (\ (a , b) -> s { _board = a , _castling = b } ) <$> f (_board s , _castling s)
+
+pawnLens :: Lens' ChessState (ChessBoard, Turn, EnPassant)
+pawnLens f s = (\ (a , b , c) -> s { _board = a , _turn = b , _enpassant = c } ) <$> f (_board s , _turn s , _enpassant s)
+
+pawnLens2 :: Lens' ChessState (Turn, EnPassant)
+pawnLens2 f s = (\ (b , c) -> s { _turn = b , _enpassant = c } ) <$> f (_turn s , _enpassant s)
+
+zeroLens :: Lens' ChessState (Turn, Int)
+zeroLens f s = (\ (b , c) -> s { _turn = b , _zeroing = c } ) <$> f (_turn s , _zeroing s)
+
+repetitionLens :: Lens' ChessState (ChessBoard, History)
+repetitionLens f s = (\ (b , c) -> s { _board = b , _history = c } ) <$> f (_board s , _history s)
+
+promotingLens :: Lens' ChessState (Turn, Promoting)
+promotingLens f s = (\ (b , c) -> s { _turn = b , _promoting = c } ) <$> f (_turn s , _promoting s)
+
+captureLens :: Lens' ChessState (Turn, CaptureCache)
+captureLens f s = (\ (b , c) -> s { _turn = b , _captureCache = c } ) <$> f (_turn s , _captureCache s)-}
 
 chess' :: HasCallStack => Game ChessState -> Game ChessState
 chess' self = mempty
-    & registerRule "Touch" playerTouch
-        & registerRule "UpdateSelection" (markAvailableMoves self)
-        & registerRule "UpdateSelection" clearAvailableMoves
-        & registerRule "UpdateSelection" updateSelection
-        & registerRule "SendSelect" sendSelect
+    & registerRule "Touch" (playerTouch touch)
+        & registerRule "UpdateSelection" (markAvailableMoves self id)
+        & registerRule "UpdateSelection" (clearAvailableMoves touch)
+        & registerRule "UpdateSelection" (updateSelection touch)
+        & registerRule "SendSelect" (sendSelect board)
 
-        & registerRule "Touch1" touch1Turn
-        & registerRule "Touch1Turn" touch1Piece
-        & registerRule "Touch1Piece" touch1Colour
+        & registerRule "Touch1" (touch1Turn turn)
+        & registerRule "Touch1Turn" (touch1Piece board)
+        & registerRule "Touch1Piece" (touch1Colour touch)
 
     & registerRule "Touch2" touch2
-    & registerRule "UncheckedMove" uncheckedMovePiece
-        & registerRule "UncheckedMovePiece" uncheckedMoveTurn
-        & registerRule "UncheckedMoveTurn" uncheckedMoveSelf
+    & registerRule "UncheckedMove" (uncheckedMovePiece board) -- TODO how does zooming interact with compiling?
+        & registerRule "UncheckedMovePiece" (uncheckedMoveTurn turn)
+        & registerRule "UncheckedMoveTurn" (uncheckedMoveSelf board)
         & registerRule "UncheckedMoveSelf" specializeMove
-            & registerRule "UncheckedKMove" kingMove
-            & registerRule "UncheckedKMove" castlingMove
-            & registerRule "UncheckedQMove" queenMove
-            & registerRule "UncheckedRMove" rookMove
-            & registerRule "UncheckedBMove" bishopMove
+            & registerRule "UncheckedKMove" (kingMove castling)
+            & registerRule "UncheckedKMove" (castlingMove board castling)
+            & registerRule "UncheckedQMove" (queenMove board)
+            & registerRule "UncheckedRMove" (rookMove board castling)
+            & registerRule "UncheckedBMove" (bishopMove board)
             & registerRule "UncheckedNMove" knightMove
-            & registerRule "UncheckedPMove" pawnMove
-            & registerRule "UncheckedPMove" pawnDoubleMove
-            & registerRule "UncheckedPMove" pawnCapture
-            & registerRule "UncheckedPMove" pawnEP
+            & registerRule "UncheckedPMove" (pawnMove board)
+            & registerRule "UncheckedPMove" (pawnDoubleMove board turn enpassant)
+            & registerRule "UncheckedPMove" (pawnCapture board)
+            & registerRule "UncheckedPMove" (pawnEP turn enpassant)
 
-        & registerRule "PromotionCheck" promotionCheck
+        & registerRule "PromotionCheck" (promotionCheck promoting)
         & registerRule "CheckedMovePiece" pawnZero
 
-    & registerRule "CheckedMovePiece" moveMayCapture
+    & registerRule "CheckedMovePiece" (moveMayCapture board)
         & registerRule "NonCapture" nonCapture
         & registerRule "Capture" captureZero
-            & registerRule "Zeroing" zeroRule
+            & registerRule "Zeroing" (zeroRule turn zeroing)
         & registerRule "Capture" capture
 
         & registerRule "RawMove" rawMove
         & registerRule "Take" rawTake
-            & registerRule "PutTile" putTile
+            & registerRule "PutTile" (putTile board)
 
-    & registerRule "MoveEnd" (nMoveRule 50)
-    & registerRule "MoveEnd" (nFoldRepetition 3)
-    & registerRule "MoveEnd" winRule
+    & registerRule "MoveEnd" (nMoveRule 50 turn zeroing)
+    & registerRule "MoveEnd" (nFoldRepetition 3 board history)
+    & registerRule "MoveEnd" (winRule board)
         & registerRule "Win" winClose
-    & registerRule "NextTurn" nextSubTurn
-        & registerRule "NextSubTurn" promotionPrompt
-            & registerRule "NextSubTurn" nextTurnSendStatus
+    & registerRule "NextTurn" (nextSubTurn turn promoting)
+        & registerRule "NextSubTurn" (promotionPrompt turn)
+            & registerRule "NextSubTurn" (nextTurnSendStatus turn)
             & registerRule "NextSubTurn" (turnStart :: Chess ()) -- TODO make this more accurate
-            & registerRule "TryPromote" tryPromote
+            & registerRule "TryPromote" (tryPromote turn promoting)
 
     & registerRule "PlayerConnected" connectSendBoard
     & registerRule "PlayerConnected" (turnStart :: Chess Colour) -- TODO don't do this instead do RoomCreated or so
 
-    & registerRule "PlayerConnected" connectSendStatus
-    & registerRule "TestCloseRoom" testCloseRoom
+    & registerRule "PlayerConnected" (connectSendStatus turn)
+    & registerRule "TestCloseRoom" (testCloseRoom closing)
     & registerRule "Draw" sendDraw
     & registerRule "Win" sendWin
 
     & registerRule "SendBoardAll" serveBoardAll
     & registerRule "SendTileAll" serveDrawTileAll
-    & registerRule "SendTile" sendTile
+    & registerRule "SendTile" (sendTile board)
     & registerRule "SendDrawTile" serveDrawTile
-    & registerRule "SendBoard" serveBoard
+    & registerRule "SendBoard" (serveBoard board)
     & registerRule "SendTurn" serveTurn
     & registerRule "SendPromotionPrompt" servePromotionPrompt
     & registerRule "SendMarkAvailableMove" serveMarkAvailableMove
     & registerRule "SendClearAvailableMoves" serveClearAvailableMoves
 
     & registerRule "MoveEnd" movePrintBoard
-    & registerRule "PrintBoard" printBoard
+
+    -- hush
+    & registerRule "PrintBoard" (returnRule :: Rule ChessState ())
+    & registerRule "SendRaw" (returnRule :: Rule ChessState SendRaw)
+    & registerRule "TurnStart" (returnRule :: Rule ChessState ())
 
 
 --data ChessOpts = Atomic -- | Checkers | SelfCapture
@@ -128,12 +152,12 @@ atomicDefaults =
     , (-1 ,  1), ( 0 ,  1), ( 1 ,  1)]
 
 applyChessOpt :: ChessOpts -> ChessBuilder -> ChessBuilder
-applyChessOpt "Atomic" _ = registerRule "Capture" (atomicExplosion atomicDefaults)
+applyChessOpt "Atomic" _ = registerRule "Capture" (atomicExplosion atomicDefaults board)
 applyChessOpt "RTS" _ = overwriteRule "Touch1" (idRule "Touch1Turn" :: Chess PlayerTouch) 
                       . overwriteRule "UncheckedMovePiece" (idRule "UncheckedMoveTurn" :: Chess PieceMove)
 applyChessOpt "SelfCapture" _ = overwriteRule "UncheckedMoveTurn" (idRule "UncheckedMoveSelf" :: Chess PieceMove)
-applyChessOpt "Checkers" self = spliceRule "UncheckedMoveSelf" "UncheckedMoveCheckers" checkers
-                              . registerRule "TurnStart" (markMoves self "UncheckedMoveSelf" "UncheckedMoveCheckers" $ Proxy @PieceMove)
+applyChessOpt "Checkers" self = spliceRule "UncheckedMoveSelf" "UncheckedMoveCheckers" (checkers turn captureCache)
+                              . registerRule "TurnStart" (markMoves self "UncheckedMoveSelf" "UncheckedMoveCheckers" (Proxy @PieceMove) id)
 applyChessOpt opt _ = trace ("Unrecognized option: " ++ opt)
 
 chessWithOpts :: [ChessOpts] -> ChessBuilder -> ChessBuilder
@@ -210,11 +234,12 @@ chessApp refRefConn refRefGame serverThreadId pending = handle (throwTo serverTh
         game <- liftIO $ atomically $ readTMVar refGame
 
         let baseRules = view _2 game
-                & registerRule "SendRaw" (serverRule refConn)
+                & overwriteRule "SendRaw" (serverRule refConn)
 
         let runner = runGame' $ if spectator then baseRules else baseRules
                 & registerRule "PlayerDisconnected" (disconnect refConn refGame)
-                & registerRule "CloseRoom" (roomRule refRefGame refRefConn room)
+                & registerRule "CloseRoom" (roomRule refRefGame refRefConn room running)
+                & overwriteRule "PrintBoard" (printBoard board)
 
         liftIO $ withTMVarIO_ refGame $ _1 (`runner` [Event "PlayerConnected" $ toDyn colour])
         liftIO $ mainloop colour spectator refGame conn runner
