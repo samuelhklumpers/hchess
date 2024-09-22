@@ -9,6 +9,7 @@ displayfield = document.querySelector("#playfield");
 overfield = document.querySelector("#overlay");
 statusbox = document.querySelector("#status");
 field = document.querySelector("#field-container");
+yourTurn = document.querySelector("#sampleStatusChanged");
 playfield = [];
 overlay = [];
 
@@ -148,6 +149,7 @@ function process(effect, args) {
         }
         case "Status": {
             statusbox.innerHTML = args;
+            yourTurn.play();
             break;
         }
         case "SelectTile": {
