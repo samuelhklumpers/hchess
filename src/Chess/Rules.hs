@@ -1,6 +1,5 @@
 {-# LANGUAGE TypeFamilies, OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RankNTypes #-}
@@ -11,9 +10,8 @@ import qualified Data.Map as M
 import qualified Data.Set as S
 import qualified Data.Bimap as B
 
-import Data.Maybe (isNothing, isJust, fromJust, mapMaybe, fromMaybe)
-import Control.Monad.Trans.State.Lazy ( get, modify )
-import Control.Lens ( use, (%=), (.=), at, (?=), to , _1 , _2 , _3 , (.~), zoom, united, Lens', ALens' )
+import Data.Maybe (isNothing, isJust, mapMaybe, fromMaybe)
+import Control.Lens ( use, (%=), (.=), at, (?=), to , _1   , (.~), Lens' )
 import Control.Monad (when, forM_)
 import Data.List (uncons)
 import Network.WebSockets

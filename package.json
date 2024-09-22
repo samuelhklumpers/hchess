@@ -11,5 +11,8 @@
     "sass": "sass --watch data/gamestyle.scss data/gamestyle.css"
   },
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "dependencies": {
+    "sass": "^1.79.3"
+  }
 }

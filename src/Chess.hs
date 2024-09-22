@@ -9,8 +9,8 @@ import qualified Data.Bimap as B
 import qualified Data.Map as M
 import qualified Data.List as L
 
-import Control.Lens ( at, view, (&), (?~), (%~) , _2, _1, (^.), Zoom (zoom), united, Lens' )
-import Control.Monad (forever, unless, ap)
+import Control.Lens ( at, view, (&), (?~), (%~) , _2, _1, (^.) )
+import Control.Monad (forever, unless)
 import Network.WebSockets
     ( acceptRequest,
       receiveDataMessage,

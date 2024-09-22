@@ -8,6 +8,7 @@ const opts = urlParams.getAll('opts');
 displayfield = document.querySelector("#playfield");
 overfield = document.querySelector("#overlay");
 statusbox = document.querySelector("#status");
+field = document.querySelector("#field-container");
 playfield = [];
 overlay = [];
 
@@ -38,6 +39,9 @@ function draw_and_cache(shape, ix, colour) {
 function draw_and_cache_(shape, ix, raw, col) {
     im = toHTML(raw);
     im.setAttribute("class", "square");
+    if (black) {
+        im.classList.add("flipped");
+    }
     imageCache[shape] = im
     draw_svg(ix, im.cloneNode(true), col);
 }
@@ -248,3 +252,8 @@ function createBoard(n, m) {
 }
 
 createBoard(8,8);
+
+let black = colour == "Black";
+if (black) {
+    field.classList.add("flipped");
+}

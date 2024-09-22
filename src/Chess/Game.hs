@@ -18,7 +18,6 @@ import Data.Function ((&))
 import Control.Lens ((?~), at, (<>~), (^.))
 import Data.Foldable (foldrM)
 import GHC.Stack (HasCallStack, callStack, prettyCallStack)
-import GHC.IO (unsafePerformIO)
 import Debug.Trace (trace)
 
 
