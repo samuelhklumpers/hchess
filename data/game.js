@@ -200,6 +200,10 @@ socket.onopen = function (_) {
 };
 
 
+socket.onclose = function (_) {
+    statusbox.innerHTML = "Disconnected";
+}
+
 function aeson(contents, tag) {
     return {"contents": contents, "tag": tag};
 }
