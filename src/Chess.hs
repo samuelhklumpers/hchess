@@ -153,7 +153,7 @@ atomicDefaults =
 
 applyChessOpt :: ChessOpts -> ChessBuilder -> ChessBuilder
 applyChessOpt "Atomic" _ = registerRule "Capture" (atomicExplosion atomicDefaults board)
-applyChessOpt "RTS" _ = overwriteRule "Touch1" (idRule "Touch1Turn" :: Chess PlayerTouch) 
+applyChessOpt "RTS" _ = overwriteRule "Touch1" (idRule "Touch1Turn" :: Chess PlayerTouch)
                       . overwriteRule "UncheckedMovePiece" (idRule "UncheckedMoveTurn" :: Chess PieceMove)
 applyChessOpt "SelfCapture" _ = overwriteRule "UncheckedMoveTurn" (idRule "UncheckedMoveSelf" :: Chess PieceMove)
 applyChessOpt "Checkers" self = spliceRule "UncheckedMoveSelf" "UncheckedMoveCheckers" (checkers turn captureCache)
@@ -163,7 +163,7 @@ applyChessOpt opt _ = trace ("Unrecognized option: " ++ opt)
 chessWithOpts :: [ChessOpts] -> ChessBuilder -> ChessBuilder
 chessWithOpts []           _    = id
 chessWithOpts (opt : opts) self = chessWithOpts opts self . applyChessOpt opt self
-    
+
 type ChessBuilder = Game ChessState -> Game ChessState
 
 
@@ -174,7 +174,7 @@ chess = chess' chess
 secondUs :: Integer
 secondUs = 1000 * 1000
 
-data ChessMessage = TouchMsg Square | Register String String Colour [ChessOpts] | PromoteMsg String deriving (Show, Eq, Generic)
+data ChessMessage = TouchMsg Square | Register String String Colour [ChessOpts] | PromoteMsg String | Ping deriving (Show, Eq, Generic)
 
 --instance ToJSON ChessOpts
 --instance FromJSON ChessOpts
@@ -204,14 +204,13 @@ chessApp refRefConn refRefGame serverThreadId pending = handle (throwTo serverTh
     acceptor :: MaybeT IO ()
     acceptor = do
         conn <- liftIO $ acceptRequest pending
-        msg  <- MaybeT $ timeout (30 * secondUs) $ receiveDataMessage conn
-
+        msg  <- MaybeT $ catch (timeout (30 * secondUs) $ receiveDataMessage conn) $ \ (_ :: ConnectionException) -> return Nothing
         (room, ident, colour, opts) <- hoistMaybe $ decode (fromDataMessage msg) >>= fromRegister
 
         --liftIO $ print opts
         let ruleset = chessWithOpts opts ruleset . chess'
         --liftIO $ print $ fst $ fix $ ruleset
-        
+
         refGame <- liftIO $ withTMVarIO refRefGame $ setdefaultM room $ newTMVarIO (chessInitial, fix ruleset)
         refConn <- liftIO $ withTMVarIO refRefConn $ \ connRefM -> do
             case M.lookup room connRefM of
@@ -250,8 +249,14 @@ chessApp refRefConn refRefGame serverThreadId pending = handle (throwTo serverTh
                 isRunning <- view (_1 . running) <$> liftIO (atomically $ readTMVar st)
                 unless isRunning $ hoistMaybe Nothing
 
-                maybeMsg <- lift $ catch (timeout (10 * 60 * secondUs) $ receiveDataMessage conn) $
-                    \ (_ :: ConnectionException) -> return Nothing
+                maybeMsg <- lift $ do
+                    let rcv = receiveDataMessage conn
+                    let rcv' = if spectator
+                        then Just <$> rcv
+                        else timeout (10 * 60 * secondUs) rcv
+                    msg <- catch rcv' $ \ (_ :: ConnectionException) -> return Nothing
+
+                    return (msg >>= decode . fromDataMessage)
 
                 case maybeMsg of
                     Nothing  -> do
@@ -259,11 +264,10 @@ chessApp refRefConn refRefGame serverThreadId pending = handle (throwTo serverTh
                             lift $ withTMVarIO_ st $ _1 (`runner` [Event "PlayerDisconnected" $ toDyn colour])
                         hoistMaybe Nothing
                     Just msg -> do
-                        unless spectator $ do
-                            let maybeEvent = decode (fromDataMessage msg) >>= interpretMessage colour
+                        let maybeEvent = msg >>= interpretMessage colour
 
-                            whenJust maybeEvent $ \ ev -> do
-                                lift $ withTMVarIO_ st $ _1 (`runner` [ev])
+                        whenJust maybeEvent $ \ ev -> do
+                            lift $ withTMVarIO_ st $ _1 (`runner` [ev])
 
 chessServer :: Int -> IO ()
 chessServer port = do
