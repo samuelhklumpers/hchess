@@ -105,7 +105,7 @@ function process(effect, args) {
             shape = "";
             
             if (piece) {
-                [shape, _] = piece;
+                shape = piece;
             }
             
             let cell = playfield[i][j];

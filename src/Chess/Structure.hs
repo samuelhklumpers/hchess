@@ -40,6 +40,7 @@ data PlayerTouch = PlayerTouch Colour Square deriving (Show, Eq, Typeable)
 data PlayerSelect = PlayerSelect Colour Square Bool deriving (Show, Eq, Typeable)
 type HTMLColour = String
 data SendDrawTile = SendDrawTile Colour Square (Maybe Piece) HTMLColour deriving (Show, Eq, Typeable)
+data SendDrawTileImage = SendDrawTileImage Colour Square (Maybe (String, Colour)) HTMLColour deriving (Show, Eq, Typeable)
 data TouchPiece = TouchPiece Colour Piece Square deriving (Show, Eq, Typeable)
 data Move = Move Square Square deriving (Show, Eq, Typeable)
 data PieceMove = PieceMove Piece Square Square deriving (Show, Eq, Typeable)
@@ -48,7 +49,7 @@ data Take = Take Piece Square Piece deriving (Show, Eq, Typeable)
 data PromotionCheck = PromotionCheck Colour Square Piece deriving (Show, Eq, Typeable)
 data PutTile = PutTile Square (Maybe Piece) deriving (Show, Eq, Typeable)
 
-data ChessOutMessage = Board (M.Map Square (String , Colour)) | Tile Square (Maybe (String , Colour)) String | Turn Colour
+data ChessOutMessage = Board (M.Map Square (String , Colour)) | Tile Square (Maybe String) String | Turn Colour
     | Status String | Promotion | MarkAvailableMove Square | ClearAvailableMoves deriving (Show, Eq, Generic)
 
 instance ToJSON ChessOutMessage where

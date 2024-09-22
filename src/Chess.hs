@@ -105,7 +105,8 @@ chess' self = mempty
     & registerRule "SendBoardAll" serveBoardAll
     & registerRule "SendTileAll" serveDrawTileAll
     & registerRule "SendTile" (sendTile board)
-    & registerRule "SendDrawTile" serveDrawTile
+    & registerRule "SendDrawTile" sendTileImage
+    & registerRule "SendDrawTileImage" serveDrawTile
     & registerRule "SendBoard" (serveBoard board)
     & registerRule "SendTurn" serveTurn
     & registerRule "SendPromotionPrompt" servePromotionPrompt
@@ -139,6 +140,8 @@ applyChessOpt "SelfCapture" _ = overwriteRule "UncheckedMoveTurn" (idRule "Unche
 applyChessOpt "Anti" _ = spliceRule "Win" "AntiWin" antiChess
 applyChessOpt "Checkers" self = spliceRule "UncheckedMoveSelf" "UncheckedMoveCheckers" (checkers turn captureCache)
                               . registerRule "TurnStart" (markMoves self "UncheckedMoveSelf" "UncheckedMoveCheckers" (Proxy @PieceMove) id)
+applyChessOpt "Stratego" _ = spliceRule "SendDrawTileImage" "SendDrawTileImageStratego" stratego
+                           . overwriteRule "SendBoard" serveBoardTiles
 applyChessOpt opt _ = trace ("Unrecognized option: " ++ opt)
 
 chessWithOpts :: [ChessOpts] -> ChessBuilder -> ChessBuilder

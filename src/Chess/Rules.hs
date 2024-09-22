@@ -428,14 +428,18 @@ sendTile board_ (c, x) = do
     piece <- use $ board_ . at x
     cause "SendDrawTile" $ SendDrawTile c x piece (cmap piece False)
 
+sendTileImage :: HasCallStack => Rule s SendDrawTile
+sendTileImage (SendDrawTile c a p s) = do
+    cause "SendDrawTileImage" $ SendDrawTileImage c a (first pieceImage <$> p) s
+
 serveBoard :: HasCallStack => Lens' s ChessBoard -> Rule s Colour
 serveBoard board_ c = do
     currentBoard <- use $ board_ . to (fmap (first pieceImage))
     cause "SendRaw" $ SendRaw [c] $ Board currentBoard
 
-serveDrawTile :: HasCallStack => Rule s SendDrawTile
-serveDrawTile (SendDrawTile c a p s) = do
-    cause "SendRaw" $ SendRaw [c] $ Tile a (first pieceImage <$> p) s
+serveDrawTile :: HasCallStack => Rule s SendDrawTileImage
+serveDrawTile (SendDrawTileImage c a p s) = do
+    cause "SendRaw" $ SendRaw [c] $ Tile a (fst <$> p) s
 
 serveTurn :: HasCallStack => Rule s Colour
 serveTurn c = do
@@ -548,3 +552,19 @@ notColour Black = White
 antiChess :: HasCallStack => Rule s Colour
 antiChess c = do
     cause "AntiWin" (notColour c)
+
+stratego :: HasCallStack => Rule s SendDrawTileImage
+stratego (SendDrawTileImage c a p s) = do
+    case p of 
+        Nothing -> do
+            cause "SendDrawTileImageStratego" $ SendDrawTileImage c a p s
+        Just (_, c') -> do
+            let p' = if c == c' then p else Just ("question.svg", c')
+            cause "SendDrawTileImageStratego" $ SendDrawTileImage c a p' s
+
+-- TODO lazy
+serveBoardTiles :: HasCallStack => Rule s Colour
+serveBoardTiles c = do
+    forM_ squares $ \ col -> do
+        forM_ col $ \a -> do
+            cause "SendTile" (c, a)
