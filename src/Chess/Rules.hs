@@ -541,3 +541,10 @@ checkers turn_ captures_ (PieceMove p x y) = do
         when (null captures || (x, y) `elem` moves) $ do
             cause "UncheckedMoveCheckers" (PieceMove p x y)
 
+notColour :: Colour -> Colour
+notColour White = Black
+notColour Black = White
+
+antiChess :: HasCallStack => Rule s Colour
+antiChess c = do
+    cause "AntiWin" (notColour c)

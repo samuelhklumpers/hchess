@@ -42,26 +42,6 @@ import Network.WebSockets.Connection (connectionSentClose)
 import Data.Functor (void)
 import Data.Proxy (Proxy(..))
 
-{-boardCastle :: Lens' ChessState (ChessBoard, Castling)
-boardCastle f s = (\ (a , b) -> s { _board = a , _castling = b } ) <$> f (_board s , _castling s)
-
-pawnLens :: Lens' ChessState (ChessBoard, Turn, EnPassant)
-pawnLens f s = (\ (a , b , c) -> s { _board = a , _turn = b , _enpassant = c } ) <$> f (_board s , _turn s , _enpassant s)
-
-pawnLens2 :: Lens' ChessState (Turn, EnPassant)
-pawnLens2 f s = (\ (b , c) -> s { _turn = b , _enpassant = c } ) <$> f (_turn s , _enpassant s)
-
-zeroLens :: Lens' ChessState (Turn, Int)
-zeroLens f s = (\ (b , c) -> s { _turn = b , _zeroing = c } ) <$> f (_turn s , _zeroing s)
-
-repetitionLens :: Lens' ChessState (ChessBoard, History)
-repetitionLens f s = (\ (b , c) -> s { _board = b , _history = c } ) <$> f (_board s , _history s)
-
-promotingLens :: Lens' ChessState (Turn, Promoting)
-promotingLens f s = (\ (b , c) -> s { _turn = b , _promoting = c } ) <$> f (_turn s , _promoting s)
-
-captureLens :: Lens' ChessState (Turn, CaptureCache)
-captureLens f s = (\ (b , c) -> s { _turn = b , _captureCache = c } ) <$> f (_turn s , _captureCache s)-}
 
 chess' :: HasCallStack => Game ChessState -> Game ChessState
 chess' self = mempty
@@ -156,6 +136,7 @@ applyChessOpt "Atomic" _ = registerRule "Capture" (atomicExplosion atomicDefault
 applyChessOpt "RTS" _ = overwriteRule "Touch1" (idRule "Touch1Turn" :: Chess PlayerTouch)
                       . overwriteRule "UncheckedMovePiece" (idRule "UncheckedMoveTurn" :: Chess PieceMove)
 applyChessOpt "SelfCapture" _ = overwriteRule "UncheckedMoveTurn" (idRule "UncheckedMoveSelf" :: Chess PieceMove)
+applyChessOpt "Anti" _ = spliceRule "Win" "AntiWin" antiChess
 applyChessOpt "Checkers" self = spliceRule "UncheckedMoveSelf" "UncheckedMoveCheckers" (checkers turn captureCache)
                               . registerRule "TurnStart" (markMoves self "UncheckedMoveSelf" "UncheckedMoveCheckers" (Proxy @PieceMove) id)
 applyChessOpt opt _ = trace ("Unrecognized option: " ++ opt)
