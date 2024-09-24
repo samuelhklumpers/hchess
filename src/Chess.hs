@@ -149,7 +149,7 @@ applyChessOpt "Checkers" self = spliceRule "UncheckedMoveSelf" "UncheckedMoveChe
                               . overwriteRule "MarkMoves" (markMoves (fix self) "UncheckedMoveSelf" "UncheckedMoveCheckers" (Proxy @PieceMove) id)
 applyChessOpt "StrategoV" _ = spliceRule "SendDrawTileImage" "SendDrawTileImageStratego" stratego
                             . overwriteRule "SendBoard" serveBoardTiles
-applyChessOpt "StrategoC" _ = spliceRule "Capture" "StrategoCapture" (strategoCaptures $ (Just .) . on (>=) pieceValue)
+applyChessOpt "StrategoC" _ = spliceRule "Capture" "StrategoCapture" (strategoCapturesAA)
 applyChessOpt opt _ = trace ("Unrecognized option: " ++ opt)
 
 chessWithOpts :: [ChessOpts] -> ChessBuilder -> ChessBuilder

@@ -33,7 +33,7 @@ import GHC.Natural (Natural)
 import Data.Either (isLeft)
 import GHC.Stack (HasCallStack)
 import Data.Typeable (Typeable)
-import Data.Function (fix)
+import Data.Function (fix, on)
 import Data.Proxy (Proxy (..))
 import Data.Dynamic (fromDynamic)
 
@@ -600,14 +600,22 @@ staleLose = staleCond Lose
 staleSkip :: Lens' s MoveCache -> Lens' s Turn -> Rule s a
 staleSkip = staleCond (const Skip)
 
-strategoCaptures :: (PieceType -> PieceType -> Maybe Bool) -> Rule s Capture
-strategoCaptures canCapture cap@(Capture p x _ q) = do
+strategoCaptures :: (PieceType -> PieceType -> Maybe Ordering) -> Rule s Capture
+strategoCaptures canCapture cap@(Capture p x y q) = do
     whenJust (canCapture (fst p) (fst q)) $ \case
-        True  -> do
+        GT  -> do
             cause "StrategoCapture" cap
-        False -> do
+        EQ  -> do
+            cause "Take" $ Take p y q
             cause "Take" $ Take q x p
-            cause "NextTurn" ()
+            cause "MoveEnd" ()
+        LT -> do
+            cause "Take" $ Take q x p
+            cause "MoveEnd" ()
+
+-- attacker advantage
+strategoCapturesAA :: Rule s Capture
+strategoCapturesAA = strategoCaptures $ (Just .) . on (compare . (4+)) pieceValue
 
 -- TODO lazy
 serveBoardTiles :: HasCallStack => Rule s Colour
