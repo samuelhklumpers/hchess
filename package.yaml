@@ -37,17 +37,15 @@ library:
   source-dirs: src
   dependencies:
   - containers
-  - parsec
   - transformers
   - lens
-  - wai
-  - websockets
-  - wai-websockets
-  - unbounded-delays
+  - parsec
   - aeson
   - bimap
   - stm
-  - bytestring
+  - websockets
+  - unbounded-delays
+
 
 executables:
   hchess-exe:

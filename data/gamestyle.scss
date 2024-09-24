@@ -35,6 +35,10 @@ html {
   position: absolute;
 }
 
+.flipped {
+    transform: rotate(180deg);
+}
+
 #playfield, #overlay {
   display: flex;
   flex-direction: column;

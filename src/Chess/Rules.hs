@@ -1,4 +1,9 @@
-{-# LANGUAGE TypeFamilies, TupleSections, OverloadedStrings #-}
+{-# LANGUAGE TypeFamilies, OverloadedStrings #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Chess.Rules  ( module Chess.Game , module Chess.Rules ) where
 
@@ -6,12 +11,10 @@ import qualified Data.Map as M
 import qualified Data.Set as S
 import qualified Data.Bimap as B
 
-import Data.Maybe (isNothing, isJust, mapMaybe, fromJust)
-import Control.Monad.Trans.State.Lazy ( get )
-import Control.Lens ( use, (%=), (.=), at, (^.), (?=), to )
+import Data.Maybe (isNothing, isJust, mapMaybe, fromMaybe)
+import Control.Lens ( use, (%=), (.=), at, (?=), to , _1   , (.~), Lens' )
 import Control.Monad (when, forM_, unless)
-import Data.List (intercalate, uncons)
-import Data.Char (toLower)
+import Data.List (uncons)
 import Network.WebSockets
     ( Connection, sendBinaryData )
 import Data.Aeson (encode)
@@ -19,577 +22,604 @@ import Control.Concurrent.STM
     ( atomically, readTMVar, TMVar )
 
 
-
 import Chess.Game
+import Chess.Structure
+import Chess.Internal
+
 import Control.Monad.Trans.Except (runExceptT, throwE)
 import Control.Monad.Trans.Class (lift)
 import Data.Bifunctor (first)
 import GHC.Natural (Natural)
-
+import Data.Either (isLeft)
+import GHC.Stack (HasCallStack)
+import Data.Typeable (Typeable)
+import Data.Function (fix, on)
+import Data.Proxy (Proxy (..))
+import Data.Dynamic (fromDynamic)
 
 -- * Rules
-type Chess = Game ChessState ChessEvent
+type Chess a = Rule ChessState a
 
--- When `c` touches `y`, if `c` touched `x` right before, process the input `Touch2 c x y`, otherwise check if we should remember `Touch1 c y`
-touch1 :: Chess
-touch1 (Touch c y) = do
-    touchMemory <- use touch
-    case M.lookup c touchMemory of
+
+-- When `c` touches `y`, if `c` touched `x` right before, process the input `Touch2 c x y`
+-- otherwise check if we should remember `Touch1 c y`
+playerTouch :: HasCallStack => Lens' s Touch -> Rule s PlayerTouch
+playerTouch touch_ (PlayerTouch c y) = do
+    touchMemory <- use $ touch_ . at c
+    case touchMemory of
         Nothing -> do
-            cause $ Touch1 c y
-            cause $ UpdateSelection c y
+            cause "Touch1" $ PlayerTouch c y
+            cause "UpdateSelection" $ PlayerTouch c y
         Just (x , p) -> do
-            touch %= M.delete c
-            cause $ Touch2 p x y
-            cause $ UpdateSelection c x
-touch1 _ = return ()
+            touch_ . at c .= Nothing
+            cause "Touch2" $ PieceMove p x y
+            cause "UpdateSelection" $ PlayerTouch c x
 
-sendSelection :: Chess
-sendSelection (UpdateSelection c x) = do
-    touchMemory <- use touch
-    case M.lookup c touchMemory of
-        Nothing -> cause $ SendSelect c x False
+-- for some notion of "completing" a move
+moveCompleted :: Action -> Bool
+moveCompleted (Event e _) = e == "MoveEnd"
+moveCompleted _ = False
+
+markAvailableMoves :: HasCallStack => Game ChessState -> Lens' s ChessState -> Rule s PlayerTouch
+markAvailableMoves g chess (PlayerTouch c _) = do
+    -- PS: you might not want to cause UpdateSelection in your simulation
+    maybeSelected <- use $ chess . touch . at c
+    currentState <- use chess
+
+    whenJust maybeSelected $ \ (a , _) ->
+        forM_ [(i, j) | i <- [0..7], j <- [0..7]] $ \ b -> do
+            let res = simGameUntil moveCompleted g [mkEvent "UncheckedMove" $ Move a b] currentState
+            when (isLeft res) $ cause "SendMarkAvailableMove" (c, b)
+
+clearAvailableMoves :: HasCallStack => Lens' s Touch -> Rule s PlayerTouch
+clearAvailableMoves touch_ (PlayerTouch c _) = do
+    maybeSelected <- use $ touch_ . at c
+    case maybeSelected of
+        Nothing -> cause "SendClearAvailableMoves" c
+        Just _  -> return ()
+
+updateSelection :: HasCallStack => Lens' s Touch -> Rule s PlayerTouch
+updateSelection touch_ (PlayerTouch c x) = do
+    maybeSelected <- use $ touch_ . at c
+    case maybeSelected of
+        Nothing -> cause "SendSelect" $ PlayerSelect c x False
         -- if y is not x then something bad has happened
-        Just (y , _) -> cause $ SendSelect c y True
-sendSelection _ = return ()
+        Just (y , _) -> cause "SendSelect" $ PlayerSelect c y True
 
-cmap :: Maybe Piece -> Bool -> String
-cmap _     True  = "#FF0000"
-cmap (Just (_ , White)) False = "#FFFFFF"
-cmap (Just (_ , Black)) False = "#000000"
-cmap _ _ = ""
-
-screenTransform :: Colour -> Square -> Square
-screenTransform White x       = x
-screenTransform Black (x , y) = (x , 7 - y)
-
-drawSelection :: Chess
-drawSelection (SendSelect c x b) = do
-    piece <- use $ board . at x
-    cause $ SendDrawTile c x piece (cmap piece b)
-drawSelection _ = return ()
-
-sendTile :: Chess
-sendTile (SendTile c x) = do
-    piece <- use $ board . at x
-    cause $ SendDrawTile c x piece (cmap piece False)
-sendTile _ = return ()
-
-connectSendStatus :: Chess
-connectSendStatus (PlayerConnected p) = do
-    currentTurn <- use turn
-    currentToMove <- use toMove
-
-    case currentTurn of
-        Normal _      -> cause $ SendRaw [p] $ Status ("It's " ++ show (fromJust currentToMove) ++ "'s turn")
-        Promoting _ c -> cause $ SendRaw [p] $ Status ("It's " ++ show c ++ "'s turn")
-connectSendStatus _ = return ()
-
-nextTurnSendStatus :: Chess
-nextTurnSendStatus NextTurn = do
-    currentTurn <- use turn
-    currentToMove <- use toMove
-
-    forM_ [White, Black] $ \ p ->
-        case currentTurn of
-            Normal _      -> cause $ SendRaw [p] $ Status ("It's " ++ show (fromJust currentToMove) ++ "'s turn")
-            Promoting _ c -> cause $ SendRaw [p] $ Status ("It's " ++ show c ++ "'s turn")
-nextTurnSendStatus _ = return ()
-
-
-
+sendSelect :: HasCallStack => Lens' s ChessBoard -> Rule s PlayerSelect
+sendSelect board_ (PlayerSelect c x b) = do
+    piece <- use $ board_ . at x
+    cause "SendDrawTile" $ SendDrawTile c x piece (cmap piece b)
 
 -- If `c` is not to move, then don't
-touch1Turn :: Chess
-touch1Turn (Touch1 c x) = do
-    currentToMove <- use toMove
-    when (currentToMove == Just c) $ cause $ Touch1Turn c x
-touch1Turn _ = return ()
-
-touch1TurnRTS :: Chess
-touch1TurnRTS (Touch1 c x) = do
-    cause $ Touch1Turn c x
-touch1TurnRTS _ = return ()
-
+touch1Turn :: HasCallStack => Lens' s Turn -> Rule s PlayerTouch
+touch1Turn turn_ (PlayerTouch c x) = do
+    currentToMove <- use $ turn_ . to turnColour
+    when (currentToMove == Just c) $ do
+        cause "Touch1Turn" (PlayerTouch c x)
 
 -- If `x` does not contain a piece, then don't
-touch1Piece :: Chess
-touch1Piece (Touch1Turn c x) = do
-    currentBoard <- use board
-    whenJust (M.lookup x currentBoard) $
-        \ p -> cause (Touch1Piece c p x)
-touch1Piece _ = return ()
+touch1Piece :: HasCallStack => Lens' s ChessBoard -> Rule s PlayerTouch
+touch1Piece board_ (PlayerTouch c x) = do
+    piece <- use $ board_ . at x
+    whenJust piece $ \ p -> do
+        cause "Touch1Piece" $ TouchPiece c p x
 
 -- If the piece `p` on `x` has colour `c` then remember, otherwise don't
-touch1Colour :: Chess
-touch1Colour (Touch1Piece c p x) = do
-    when (snd p == c) $ touch %= M.insert c (x, p)
-touch1Colour _ = return ()
+touch1Colour :: Lens' s Touch -> Rule s TouchPiece
+touch1Colour touch_ (TouchPiece c p x) = do
+    when (snd p == c) $ do
+        touch_ %= M.insert c (x, p)
 
-touch2Unchecked :: Chess
-touch2Unchecked (Touch2 p x y) = do
-    cause $ UncheckedMovePiece p x y
-touch2Unchecked _ = return ()
+touch2 :: HasCallStack => Rule s PieceMove
+touch2 (PieceMove p x y) = do
+    cause "UncheckedMovePiece" (PieceMove p x y)
 
-moveTurn :: Chess
-moveTurn (UncheckedMovePiece p x y) = do
+uncheckedMovePiece :: HasCallStack => Lens' s ChessBoard -> Rule s Move
+uncheckedMovePiece board_ (Move x y) = do
+    maybePiece <- use $ board_ . at x
+    whenJust maybePiece $ \ p -> do
+        cause "UncheckedMovePiece" $ PieceMove p x y
+
+uncheckedMoveTurn :: HasCallStack => Lens' s Turn -> Rule s PieceMove
+uncheckedMoveTurn turn_ (PieceMove p x y) = do
     let c = snd p
-    currentToMove <- use toMove
-    when (currentToMove == Just c) $ cause $ UncheckedMoveTurn p x y
-moveTurn _ = return ()
+    currentToMove <- use $ turn_ . to turnColour
+    when (currentToMove == Just c) $ do
+        cause "UncheckedMoveTurn" (PieceMove p x y)
 
-noSelfCapture :: Chess
-noSelfCapture (UncheckedMoveTurn p x y) = do
-    target <- M.lookup y <$> use board
+uncheckedMoveSelf :: HasCallStack => Lens' s ChessBoard -> Rule s PieceMove
+uncheckedMoveSelf board_ (PieceMove p x y) = do
+    target <- use $ board_ . at y
     case target of
-        Nothing -> cause $ UncheckedMoveSelf p x y
-        Just p' -> when (snd p' /= snd p) $ cause $ UncheckedMoveSelf p x y
-noSelfCapture _ = return ()
+        Nothing -> cause "UncheckedMoveSelf" (PieceMove p x y)
+        Just p' -> when (snd p' /= snd p) $ cause "UncheckedMoveSelf" (PieceMove p x y)
 
-{-
-touch2Colour :: Chess
-touch2Colour (Touch2 p x y) = do
-    target <- M.lookup y <$> use board
+specializeMove :: HasCallStack => Rule s PieceMove
+specializeMove (PieceMove p x y) = do
+    let e = "Unchecked" ++ show (fst p) ++ "Move"
+    cause e $ PieceMove p x y
+
+kingMove :: HasCallStack => Lens' s Castling -> Rule s PieceMove
+kingMove castling_ (PieceMove p x y) = do
+    when (manhattan x y <= 1) $ do
+        castling_ %= S.delete x
+        cause "CheckedMovePiece" (PieceMove p x y)
+
+castlingMove :: HasCallStack => Lens' s ChessBoard -> Lens' s Castling -> Rule s PieceMove
+castlingMove board_ castling_ (PieceMove p a@(ax , ay) b@(bx , by)) = when (ay == by && abs (bx - ax) == 2) $ do
+    castle <- use castling_
+    s <- use board_
+    let c = if ax < bx then (bx + 1 , ay) else (bx - 2 , ay)
+    let d = if ax < bx then (bx - 1 , ay) else (bx + 1 , ay)
+
+    let pathOk = pathIsEmpty s $ (, ay) <$> enumFromToL' (fst c) (fst d)
+
+    when (c `S.member` castle && a `S.member` castle && pathOk) $ do
+        rookMaybe <- use $ board_ . at c
+        castling_ %= S.delete c
+
+        whenJust rookMaybe $ \ rook -> do
+            castling_ %= S.delete a
+
+            cause "RawMove" $ PieceMove rook c d
+            cause "CheckedMovePiece" $ PieceMove p a b
+
+queenMove :: HasCallStack => Lens' s ChessBoard -> Rule s PieceMove
+queenMove board_ (PieceMove p x y) = do
+    s <- use board_
+    when (rookP s x y || bishopP s x y) $ cause "CheckedMovePiece" $ PieceMove p x y
+
+rookMove :: HasCallStack => Lens' s ChessBoard -> Lens' s Castling -> Rule s PieceMove
+rookMove board_ castling_ (PieceMove p x y) = do
+    s <- use board_
+    castling_ %= S.delete x
+    when (rookP s x y) $ cause "CheckedMovePiece" $ PieceMove p x y
+
+bishopMove :: HasCallStack => Lens' s ChessBoard -> Rule s PieceMove
+bishopMove board_ (PieceMove p x y) = do
+    s <- use board_
+    when (bishopP s x y) $ cause "CheckedMovePiece" $ PieceMove p x y
+
+knightMove :: HasCallStack => Rule s PieceMove
+knightMove (PieceMove p x y) = do
+    when (knightP x y) $ do
+        cause "CheckedMovePiece" $ PieceMove p x y
+
+pawnMove :: HasCallStack => Lens' s ChessBoard -> Rule s PieceMove
+pawnMove board_ (PieceMove p x y) = do
+    let c = snd p
+    let d = direction c
+
+    let (ax, ay) = x
+    let (bx, by) = y
+
+    target <- use $ board_ . at y
+
+    when (isNothing target && ax == bx && ay + d == by) $ do
+        cause "PromotionCheck" $ PromotionCheck c y p
+        cause "CheckedMovePiece" $ PieceMove p x y
+
+pawnDoubleMove :: HasCallStack => Lens' s ChessBoard -> Lens' s Turn -> Lens' s EnPassant -> Rule s PieceMove
+pawnDoubleMove board_ turn_ enpassant_ (PieceMove p x y) = do
+    let c = snd p
+    let d = direction c
+
+    let (ax, ay) = x
+    let (bx, by) = y
+
+    target <- use $ board_ . at y
+
+    when (isNothing target && ax == bx && rank (snd p) 1 == ay && ay + 2 * d == by) $ do
+        currentTurn <- use turn_
+        enpassant_ ?= (moveNumber currentTurn + 1 , (ax , ay + d), y, p)
+        cause "PromotionCheck" $ PromotionCheck c y p
+        cause "CheckedMovePiece" $ PieceMove p x y
+
+pawnCapture :: HasCallStack => Lens' s ChessBoard -> Rule s PieceMove
+pawnCapture board_ (PieceMove p x y) = do
+    let c = snd p
+    let d = direction c
+
+    let (ax, ay) = x
+    let (bx, by) = y
+
+    target <- use $ board_ . at y
+
+    when (isJust target && abs (ax - bx) == 1 && ay + d == by) $ do
+        cause "PromotionCheck" $ PromotionCheck c y p
+        cause "CheckedMovePiece" $ PieceMove p x y
+
+pawnEP :: HasCallStack => Lens' s Turn -> Lens' s EnPassant -> Rule s PieceMove
+pawnEP turn_ enpassant_ (PieceMove p x y) = do
+    let c = snd p
+    let d = direction c
+
+    let (ax, ay) = x
+    let (bx, by) = y
+
+    ep <- use enpassant_
+    currentTurn <- use turn_
+
+    forM_ ep $ \ (epTurn , epSquare , pSquare, epPiece) -> do
+        when (moveNumber currentTurn == epTurn && y == epSquare && abs (ax - bx) == 1 && ay + d == by) $ do
+            cause "Take" $ Take p pSquare epPiece
+            cause "PromotionCheck" $ PromotionCheck c y p
+            cause "CheckedMovePiece" $ PieceMove p x y
+
+promotionCheck :: HasCallStack => Lens' s Promoting -> Rule s PromotionCheck
+promotionCheck promoting_ (PromotionCheck c x p) = do
+    when (rank c 7 == snd x) $ do
+        promoting_ ?= (x , p)
+        cause "Promoting" ()
+
+pawnZero :: HasCallStack => Rule s PieceMove
+pawnZero (PieceMove (P, _) _ _) = cause "Zeroing" ()
+pawnZero _ = return ()
+
+moveMayCapture :: HasCallStack => Lens' s ChessBoard -> Rule s PieceMove
+moveMayCapture board_ (PieceMove p x y) = do
+    target <- use $ board_ . at y
     case target of
-        Nothing -> cause $ UncheckedMove x y
-        Just p' -> when (snd p' /= snd p) $ cause $ UncheckedMove x y
-touch2Colour _ = return ()
--}
+        Nothing -> cause "NonCapture" (PieceMove p x y)
+        Just q  -> cause "Capture" (Capture p x y q)
 
-moveMayCapture :: Chess
-moveMayCapture (Move p x y) = do
-    target <- M.lookup y <$> use board
-    case target of
-        Nothing -> cause $ NonCapture p x y
-        Just _  -> cause $ Capture p x y
-    cause MoveEnd
-moveMayCapture _ = return ()
+captureZero :: HasCallStack => Rule s Capture
+captureZero _ = do
+    cause "Zeroing" ()
 
-capture :: Chess
-capture (Capture p x y) = do
-    cause $ Take p y
-    cause $ RawMove p x y
-capture _ = return ()
+zeroRule :: Lens' s Turn -> Lens' s Int -> Rule s ()
+zeroRule turn_ zeroing_ () = do
+    currentTurn <- use $ turn_ . to moveNumber
+    zeroing_ .= currentTurn
 
-nonCapture :: Chess
-nonCapture (NonCapture p x y) = cause $ RawMove p x y
-nonCapture _ = return ()
+nonCapture :: HasCallStack => Rule s PieceMove
+nonCapture (PieceMove p x y) = do
+    cause "RawMove" $ PieceMove p x y
+    cause "MoveEnd" ()
 
-putTile :: Chess
-putTile (PutTile x p) = do
-    board . at x .= p
-    cause $ SendTileAll x
-putTile _ = return ()
+capture :: HasCallStack => Rule s Capture
+capture (Capture p x y q) = do
+    cause "Take" $ Take p y q
+    cause "RawMove" $ PieceMove p x y
+    cause "MoveEnd" ()
 
-winRule :: Chess
-winRule MoveEnd = do
-    currentBoard <- use board
+rawMove :: HasCallStack => Rule s PieceMove
+rawMove (PieceMove p x y) = do
+    cause "PutTile" $ PutTile y (Just p)
+    cause "PutTile" $ PutTile x Nothing
+
+rawTake :: HasCallStack => Rule s Take
+rawTake (Take _ y _) = do
+    cause "PutTile" $ PutTile y Nothing
+
+putTile :: HasCallStack => Lens' s ChessBoard -> Rule s PutTile
+putTile board_ (PutTile x p) = do
+    board_ . at x .= p
+    cause "SendTileAll" x
+
+moveStep :: Promoting -> Turn -> Turn
+moveStep st t = case st of
+    Just (_, (_, c)) -> Promoting (moveNumber t) c
+    Nothing          -> Normal $ moveNumber t + 1
+
+nextSubTurn :: HasCallStack => Lens' s Turn -> Lens' s Promoting -> Rule s ()
+nextSubTurn turn_ promoting_ () = do
+    st <- use promoting_
+    turn_ %= moveStep st
+    cause "NextSubTurn" ()
+
+promotionPrompt :: HasCallStack => Lens' s Turn -> Rule s ()
+promotionPrompt turn_ () = do
+    currentTurn <- use turn_
+
+    case currentTurn of
+        Promoting _ c -> cause "SendPromotionPrompt" c
+        Normal _ -> return ()
+
+tryPromote :: HasCallStack => Lens' s Turn -> Lens' s Promoting -> Rule s (Colour , String)
+tryPromote turn_ promoting_ (c, str) = do
+    currentTurn <- use turn_
+
+    r <- runExceptT $ case currentTurn of
+        Promoting _ c' -> do
+            currentPromotion <- lift $ use promoting_
+            let x = (,) <$> B.lookupR str pieceStr <*> currentPromotion
+            whenJust x $ \ (pt , (a , _)) -> do
+                when (pt `elem` promotable && c == c') $ do
+                    lift $ cause "PutTile" $ PutTile a (Just (pt, c))
+                    throwE ()
+        _ -> return ()
+
+    case r of
+        Left ()  -> do
+            promoting_ .= Nothing
+            cause "MoveEnd" ()
+        Right () -> cause "SendPromotionPrompt" c
+
+nMoveRule :: Natural -> Lens' s Turn -> Lens' s Int -> Rule s ()
+nMoveRule n turn_ zeroing_ () = do
+    currentTurn <- use $ turn_ . to moveNumber
+    lastZero <- use zeroing_
+    when (currentTurn >= fromIntegral n + lastZero) $ do
+        cause "Draw" ()
+
+nFoldRepetition :: Natural -> Lens' s ChessBoard -> Lens' s History -> Rule s ()
+nFoldRepetition n board_ history_ () = do
+    currentBoard <- use board_
+    currentHistory <- use history_
+
+    let k = maybe 1 (+1) (M.lookup currentBoard currentHistory)
+    history_ . at currentBoard ?= k
+
+    when (k >= fromIntegral n) $ do
+        cause "Draw" ()
+
+winRule :: HasCallStack => Lens' s ChessBoard -> Rule s ()
+winRule board_ () = do
+    currentBoard <- use board_
     let kings = filter (\ x -> fst (snd x) == K) $ M.toList currentBoard
     let kingMap = M.fromListWith (++) (fmap (\ (a, (_, c)) -> (c, [a])) kings)
 
     case M.lookup White kingMap >>= uncons of
-        Nothing -> cause $ Win Black
+        Nothing -> cause "Win" Black
         Just _  -> case M.lookup Black kingMap >>= uncons of
-            Nothing -> cause $ Win White
-            Just _  -> cause NextTurn
-winRule _ = return ()
-
-
-sendWin :: Chess
-sendWin Draw = do
-    cause $ SendRaw [White, Black] $ Status "Draw"
-sendWin (Win c) = do
-    let winner = show c
-
-    cause $ SendRaw [White, Black] $ Status $ winner ++ " wins"
-sendWin _ = return ()
-
-isMove :: ChessEvent -> Bool
-isMove (Move {}) = True
-isMove _ = False
-
-isWin :: ChessEvent -> Bool
-isWin (Win {}) = True
-isWin _ = False
-
-sendAvailableMoves :: Chess -> Chess
-sendAvailableMoves g (UpdateSelection c _) = do -- PS: you might not want to cause UpdateSelection in your simulation
-    maybeSelected <- use $ touch . at c
-    currentState <- get
-    whenJust maybeSelected $ \ (a , _) ->
-        forM_ [(i, j) | i <- [0..7], j <- [0..7]] $ \ b -> do
-            let (_ , r) = simulateUntil isMove g currentState [UncheckedMove a b]
-            unless (null r) $ cause $ SendMarkAvailableMove c b
-sendAvailableMoves _ _ = return ()
-
-
-clearAvailableMoves :: Chess
-clearAvailableMoves (UpdateSelection c _) = do
-    maybeSelected <- use $ touch . at c
-    case maybeSelected of
-        Nothing -> cause $ SendClearAvailableMoves c
-        Just _  -> return ()
-clearAvailableMoves _ = return ()
-
-
-serverRule :: TMVar (M.Map Colour [Connection]) -> Chess
-serverRule connRef e = do
-    case e of
-        (PlayerConnected c) -> do
-            cause $ SendBoard c
-        (SendDrawTile c a p s)  -> do -- TODO move transforms to client
-            cause $ SendRaw [c] $ Tile (screenTransform c a) (first pieceImage <$> p) s
-        (SendBoard c)   -> do
-            currentBoard <- use board
-            cause $ SendRaw [c] $ Board (M.mapKeys (screenTransform c) $ M.map (first pieceImage) currentBoard)
-        SendBoardAll    -> do
-            cause $ SendBoard White
-            cause $ SendBoard Black
-        (SendTileAll a) -> do
-            cause $ SendTile White a
-            cause $ SendTile Black a
-        (SendTurn c)    -> do
-            cause $ SendRaw [White, Black] $ Turn c
-        (SendPromotionPrompt c) -> do
-            cause $ SendRaw [c] Promotion
-        (SendMarkAvailableMove c a) -> do
-            cause $ SendRaw [c] (MarkAvailableMove (screenTransform c a))
-        (SendClearAvailableMoves c) -> do
-            cause $ SendRaw [c] ClearAvailableMoves
-        (SendRaw cs d)   -> do
-            effect $ do
-                connM <- atomically $ readTMVar connRef
-
-                forM_ cs $ \ c -> do
-                    whenJust (M.lookup c connM) $ \ conns -> do
-                        forM_ conns (flip sendBinaryData $ encode d)
-        _               -> return ()
-
-
-rawMove :: Chess
-rawMove (RawMove p x y) = do
-    cause $ PutTile y (Just p)
-    cause $ PutTile x Nothing
-rawMove _ = return ()
-
--- kind of dead end, but useful for simulation
-uncheckedMovePiece :: Chess
-uncheckedMovePiece (UncheckedMove x y) = do
-    currentBoard <- use board
-    whenJust (M.lookup x currentBoard) $
-        \ p -> cause $ UncheckedMovePiece p x y
-uncheckedMovePiece _ = return ()
-
-specializeMove :: Chess
-specializeMove (UncheckedMoveSelf p x y) = do
-    target <- use $ board . at y
-    cause $ UncheckedMoveType p (fst p) target x y
-specializeMove _ = return ()
-
-manhattan :: Square -> Square -> Int
-manhattan (x, y) (v, w) = max (abs $ x - v) (abs $ y - w)
-
-direction :: Colour -> Int
-direction White = -1
-direction Black = 1
-
-rank :: Colour -> Int -> Int
-rank White x = 7 - x
-rank Black x = x
-
-kingMove :: Chess
-kingMove (UncheckedMoveType p K _ x y)  = do
-    when (manhattan x y <= 1) $ do
-        castling %= S.delete x
-        cause (CheckedMovePiece p x y)
-kingMove _ = return ()
-
-castlingMove :: Chess
-castlingMove (UncheckedMoveType p K _ a@(ax , ay) b@(bx , by)) = do
-    when (ay == by && abs (bx - ax) == 2) $ do
-        castle <- use castling
-        s <- get
-        let c = if ax < bx then (bx + 1 , ay) else (bx - 2 , ay)
-        let d = if ax < bx then (bx - 1 , ay) else (bx + 1 , ay)
-
-        let pathOk = pathIsEmpty s $ (, ay) <$> enumFromToL' (fst c) (fst d)
-
-        when (c `S.member` castle && a `S.member` castle && pathOk) $ do
-            rookMaybe <- use $ board . at c
-            castling %= S.delete c
-
-            whenJust rookMaybe $ \ rook -> do
-                castling %= S.delete a
-
-                cause $ RawMove rook c d
-                cause $ CheckedMovePiece p a b
-castlingMove _ = return ()
-
-enumFromTo' :: (Enum a, Ord a, Num a) => a -> a -> [a]
-enumFromTo' x y
-    | x < y = out
-    | otherwise = reverse out
-    where
-    out = enumFromTo (min x y + 1) (max x y - 1)
-
-enumFromToLR' :: (Enum a, Ord a) => a -> a -> [a]
-enumFromToLR' x y
-    | x < y = out
-    | otherwise = reverse out
-    where
-    out = enumFromTo (min x y) (max x y)
-
-enumFromToL' :: (Enum a, Ord a) => a -> a -> [a]
-enumFromToL' x y
-    | x < y = drop 1 out
-    | otherwise = drop 1 $ reverse out
-    where
-    out = enumFromTo (min x y) (max x y)
-
-rookPath :: Square -> Square -> [[Square]]
-rookPath (ax, ay) (bx, by)
-  | ax == bx = [(ax ,) <$> enumFromTo' ay by]
-  | ay == by = [(, ay) <$> enumFromTo' ax bx]
-  | otherwise = []
-
-pathIsEmpty :: ChessState -> [Square] -> Bool
-pathIsEmpty s xs = null $ mapMaybe (\ a -> s ^. board . at a) xs
-
-rookP :: ChessState -> Square -> Square -> Bool
-rookP s a b = any (pathIsEmpty s) $ rookPath a b
-
-bishopPath :: Square -> Square -> [[Square]]
-bishopPath (ax, ay) (bx, by)
-  | abs (bx - ax) == abs (by - ay) = [zip (enumFromTo' ax bx) (enumFromTo' ay by)]
-  | otherwise = []
-
-bishopP :: ChessState -> Square -> Square -> Bool
-bishopP s a b = any (pathIsEmpty s) $ bishopPath a b
-
-knightP :: Square -> Square -> Bool
-knightP (ax, ay) (bx, by) = abs ((bx - ax) * (by - ay)) == 2
-
-queenMove :: Chess
-queenMove (UncheckedMoveType p Q _ x y) = do
-    s <- get
-    when (rookP s x y || bishopP s x y) $ cause (CheckedMovePiece p x y)
-queenMove _ = return ()
-
-rookMove :: Chess
-rookMove (UncheckedMoveType p R _ x y) = do
-    s <- get
-    castling %= S.delete x
-    when (rookP s x y) $ cause (CheckedMovePiece p x y)
-rookMove _ = return ()
-
-bishopMove :: Chess
-bishopMove (UncheckedMoveType p B _ x y) = do
-    s <- get
-    when (bishopP s x y) $ cause (CheckedMovePiece p x y)
-bishopMove _ = return ()
-
-knightMove :: Chess
-knightMove (UncheckedMoveType p N _ x y) = do
-    when (knightP x y) $ cause (CheckedMovePiece p x y)
-knightMove _ = return ()
-
-promotionCheck :: Chess
-promotionCheck (PromotionCheck c x p) = do
-    when (rank c 7 == snd x) $ do
-        promoting .= Just (x , p)
-promotionCheck _ = return ()
-
-pawnMove :: Chess
-pawnMove (UncheckedMoveType p P target x y) = do
-    let c = snd p
-    let d = direction c
-
-    let (ax, ay) = x
-    let (bx, by) = y
-
-
-    when (isNothing target && ax == bx && ay + d == by) $ do
-        cause (PromotionCheck c y p)
-        cause (CheckedMovePiece p x y)
-pawnMove _ = return ()
-
-pawnDoubleMove :: Chess
-pawnDoubleMove (UncheckedMoveType p P target x y) = do
-    let c = snd p
-    let d = direction c
-
-    let (ax, ay) = x
-    let (bx, by) = y
-
-    when (isNothing target && ax == bx && rank (snd p) 1 == ay && ay + 2 * d == by) $ do
-        currentTurn <- use turn
-        enpassant .= Just (moveNumber currentTurn + 1 , (ax , ay + d), y)
-        cause $ PromotionCheck c y p
-        cause $ CheckedMovePiece p x y
-pawnDoubleMove _ = return ()
-
-pawnCapture :: Chess
-pawnCapture (UncheckedMoveType p P target x y)  = do
-    let c = snd p
-    let d = direction c
-
-    let (ax, ay) = x
-    let (bx, by) = y
-
-    when (isJust target && abs (ax - bx) == 1 && ay + d == by) $ do
-        cause $ PromotionCheck c y p
-        cause $ CheckedMovePiece p x y
-pawnCapture _ = return ()
-
-pawnEP :: Chess
-pawnEP (UncheckedMoveType p P _ x y)  = do
-    let c = snd p
-    let d = direction c
-
-    let (ax, ay) = x
-    let (bx, by) = y
-
-    ep <- use enpassant
-    currentTurn <- use turn
-
-    forM_ ep $ \ (epTurn , epSquare , pSquare) -> do
-        when (moveNumber currentTurn == epTurn && y == epSquare && abs (ax - bx) == 1 && ay + d == by) $ do
-            cause $ Take p pSquare
-            cause $ PromotionCheck c y p
-            cause $ CheckedMovePiece p x y
-pawnEP _ = return ()
-
-pawnZero :: Chess
-pawnZero (CheckedMovePiece (P , _) _ _) = cause Zeroing
-pawnZero _ = return ()
-
-captureZero :: Chess
-captureZero (Capture {}) = cause Zeroing
-captureZero _ = return ()
-
-zeroRule :: Chess
-zeroRule Zeroing = do
-    currentTurn <- use $ turn . to moveNumber
-    zeroing .= currentTurn
-zeroRule _ = return ()
-
-nMoveRule :: Natural -> Chess
-nMoveRule n MoveEnd = do
-    currentTurn <- use $ turn . to moveNumber
-    when (currentTurn >= fromIntegral n) $ cause Draw 
-nMoveRule _ _ = return ()
-
-nFoldRepetition :: Natural -> Chess
-nFoldRepetition n MoveEnd = do
-    currentBoard <- use board
-    currentHistory <- use history
-    
-    let k = maybe 1 (+1) (M.lookup currentBoard currentHistory) 
-
-    history . at currentBoard ?= k
-
-    when (k >= fromIntegral n) $ cause Draw
-nFoldRepetition _ _ = return ()
-
-promotion :: Chess
-promotion _ = return () -- stop MoveEnd from advancing the turn and wait
-
-clockRule :: Chess
-clockRule _ = return () -- how can a rule best set a timer to `cause` an event?
-
-rawTake :: Chess
-rawTake (Take _ y) = cause $ PutTile y Nothing
-rawTake _ = return ()
-
-generalizeMove :: Chess
-generalizeMove (CheckedMovePiece p x y)  = cause $ Move p x y
-generalizeMove _ = return ()
-
-logEvent :: Chess
-logEvent PrintBoard = return ()
-logEvent e = effect $ print e
-
-squares :: [[Square]]
-squares = (\y -> (,y) <$> [0..7]) <$> [0..7]
-
-pieceSymbol :: PieceType -> String
-pieceSymbol K = "K"
-pieceSymbol Q = "Q"
-pieceSymbol R = "R"
-pieceSymbol B = "B"
-pieceSymbol N = "N"
-pieceSymbol P = "P"
-
-pieceStr :: B.Bimap PieceType String
-pieceStr = B.fromList [(K, "K"), (Q, "Q"), (R, "R"), (B, "B"), (N, "N"), (P, "p")]
-
-promotable :: [PieceType]
-promotable = [Q,R,B,N]
-
-ppBoard :: ChessBoard -> String
-ppBoard b = intercalate "\n" (concatMap symbol <$> boardArray)
-    where
-    boardArray = fmap (fmap $ flip M.lookup b) squares
-
-    symbol :: Maybe Piece -> String
-    symbol Nothing = "."
-    symbol (Just p) = let c = pieceSymbol (fst p) in
-        if snd p == White then c else toLower <$> c
-
-movePrintBoard :: Chess
-movePrintBoard MoveEnd = cause PrintBoard
-movePrintBoard _ = return ()
-
-moveStep :: ChessState -> Turn -> Turn
-moveStep st t = case _promoting st of
-    Just (_, (_, c)) -> Promoting (moveNumber t) c
-    Nothing          -> Normal $ moveNumber t + 1
-
-moveEnd :: Chess
-moveEnd MoveEnd = do
-    st <- get
-    turn %= moveStep st
-    cause NextSubTurn
-moveEnd _ = return ()
-
-promotionPrompt :: Chess
-promotionPrompt NextSubTurn = do
-    currentTurn <- use turn
+            Nothing -> cause "Win" White
+            Just _  -> cause "NextTurn" ()
+
+winClose :: HasCallStack => Rule s a
+winClose _ = cause "CloseRoom" ()
+
+nextTurnSendStatus :: HasCallStack => Lens' s Turn -> Rule s ()
+nextTurnSendStatus turn_ () = do
+    currentTurn <- use turn_
 
     case currentTurn of
-        Promoting _ c -> cause $ SendPromotionPrompt c
-        Normal _ -> return ()
-promotionPrompt _ = return ()
+        Normal i      -> cause "SendRaw" $ SendRaw [White, Black] $ Status ("It's " ++ show (moveNumberColour i) ++ "'s turn")
+        Promoting _ c -> cause "SendRaw" $ SendRaw [White, Black] $ Status ("It's " ++ show c ++ "'s turn")
 
-promote1 :: Chess
-promote1 (Promote c str) = do
-    currentTurn <- use turn
+connectSendBoard :: HasCallStack => Rule s Colour
+connectSendBoard c = do
+    cause "SendBoard" c
 
-    r <- runExceptT $ do
-        case currentTurn of
-            Promoting _ c' -> do
-                currentPromotion <- lift $ use promoting
-                let x = (,) <$> B.lookupR str pieceStr <*> currentPromotion
-                --effect $ print $ (B.lookupR str pieceStr :: Maybe PieceType, currentPromotion)
-                whenJust x $ \ (pt , (a , _)) -> do
-                    when (pt `elem` promotable && c == c') $ do
-                        lift $ board . at a ?= (pt , c)
-                        throwE ()
-            _ -> return ()
+connectSendStatus :: HasCallStack => Lens' s Turn -> Rule s Colour
+connectSendStatus turn_ p = do
+    currentTurn <- use turn_
 
-    case r of
-        Left ()  -> do
-            promoting .= Nothing
-            cause MoveEnd
-        Right () -> do
-            cause $ SendPromotionPrompt c
-promote1 _ = return ()
+    -- TODO make SendStatus?
+    case currentTurn of
+        Normal i      -> cause "SendRaw" $ SendRaw [p] $ Status ("It's " ++ show (moveNumberColour i) ++ "'s turn")
+        Promoting _ c -> cause "SendRaw" $ SendRaw [p] $ Status ("It's " ++ show c ++ "'s turn")
 
-printBoard :: Chess
-printBoard PrintBoard = use board >>= effect . putStrLn . ppBoard >> effect (putStrLn "")
-printBoard _ = return ()
+disconnect :: HasCallStack => TMVar (M.Map Colour [Connection]) -> TMVar (ChessState , Game ChessState) -> Rule s Colour
+disconnect refConn refGame _ = do
+    effect $ do
+        connM <- atomically $ readTMVar refConn
+        when (M.null connM) $ do
+            withTMVarIO_ refGame (return . (_1 . closing .~ True))
+    cause "TestCloseRoom" ()
 
-winClose :: Chess
-winClose (Win _) = cause CloseRoom
-winClose Draw = cause CloseRoom
-winClose _ = return ()
+testCloseRoom :: HasCallStack => Lens' s Bool -> Rule s ()
+testCloseRoom closing_ () = do
+    isClosing <- use closing_
+    when isClosing $ do
+        cause "CloseRoom" ()
+
+sendDraw :: HasCallStack => Rule s ()
+sendDraw () = do
+    cause "SendRaw" $ SendRaw [White, Black] $ Status "Draw"
+
+sendWin :: HasCallStack => Rule s Colour
+sendWin c = do
+    let c' = if c == White then Black else White
+
+    cause "SendRaw" $ SendRaw [c] $ Status "You win :)"
+    cause "SendRaw" $ SendRaw [c'] $ Status "You lose :("
+
+serveBoardAll :: HasCallStack => Rule s ()
+serveBoardAll () = do
+    cause "SendBoard" White
+    cause "SendBoard" Black
+
+serveDrawTileAll :: HasCallStack => Rule s Square
+serveDrawTileAll a = do
+    cause "SendTile" (White, a)
+    cause "SendTile" (Black, a)
+
+sendTile :: HasCallStack => Lens' s ChessBoard -> Rule s (Colour , Square)
+sendTile board_ (c, x) = do
+    piece <- use $ board_ . at x
+    cause "SendDrawTile" $ SendDrawTile c x piece (cmap piece False)
+
+sendTileImage :: HasCallStack => Rule s SendDrawTile
+sendTileImage (SendDrawTile c a p s) = do
+    cause "SendDrawTileImage" $ SendDrawTileImage c a (first pieceImage <$> p) s
+
+serveBoard :: HasCallStack => Lens' s ChessBoard -> Rule s Colour
+serveBoard board_ c = do
+    currentBoard <- use $ board_ . to (fmap (first pieceImage))
+    cause "SendRaw" $ SendRaw [c] $ Board currentBoard
+
+serveDrawTile :: HasCallStack => Rule s SendDrawTileImage
+serveDrawTile (SendDrawTileImage c a p s) = do
+    cause "SendRaw" $ SendRaw [c] $ Tile a (fst <$> p) s
+
+serveTurn :: HasCallStack => Rule s Colour
+serveTurn c = do
+    cause "SendRaw" $ SendRaw [White] (Turn c)
+    cause "SendRaw" $ SendRaw [Black] (Turn c)
+
+servePromotionPrompt :: HasCallStack => Rule s Colour
+servePromotionPrompt c = do
+    cause "SendRaw" $ SendRaw [c] Promotion
+
+serveMarkAvailableMove :: HasCallStack => Rule s (Colour , Square)
+serveMarkAvailableMove (c, a) = do
+    cause "SendRaw" $ SendRaw [c] (MarkAvailableMove a)
+
+serveClearAvailableMoves :: HasCallStack => Rule s Colour
+serveClearAvailableMoves c = do
+    cause "SendRaw" $ SendRaw [c] ClearAvailableMoves
+
+serverRule :: TMVar (M.Map Colour [Connection]) -> Rule s SendRaw
+serverRule connRef (SendRaw cs d) = do
+    effect $ do
+        connM <- atomically $ readTMVar connRef
+
+        forM_ cs $ \ c -> do
+            whenJust (M.lookup c connM) $ \ conns -> do
+                forM_ conns (flip sendBinaryData $ encode d)
+
+roomRule :: TMVar (M.Map String (TMVar (ChessState, Game ChessState))) -> TMVar (M.Map String (TMVar (M.Map Colour [Connection]))) -> String -> Lens' s Bool -> Rule s ()
+roomRule refRefGame refRefConn room running_ () = do
+    effect $ withTMVarIO_ refRefGame (return . M.delete room)
+    effect $ withTMVarIO_ refRefConn (return . M.delete room)
+    running_ .= False
+
+movePrintBoard :: HasCallStack => Rule s ()
+movePrintBoard () = cause "PrintBoard" ()
+
+printBoard :: Lens' s ChessBoard -> Rule s ()
+printBoard board_ () = use board_ >>= effect . putStrLn . ppBoard >> effect (putStrLn "")
+
+idRule :: (Typeable a, HasCallStack) => String -> Rule s a
+idRule = cause
+
+returnRule :: Rule s a
+returnRule _ = return ()
+
+atomicExplosion :: HasCallStack => [(Int, Int)] -> Lens' s ChessBoard -> Rule s Capture
+atomicExplosion offsets board_ (Capture p _ (x , y) _) = do
+    forM_ offsets $ \ (dx , dy) -> do
+        let b = (x + dx , y + dy)
+        maybeTarget <- use $ board_ . at b
+        whenJust maybeTarget $ \ target -> do
+            when (fst target /= P || dx == 0 && dy == 0) $
+                cause "Take" $ Take p b target
+
+mayCapture :: Action -> Maybe (Either Move Capture)
+mayCapture (Event "NonCapture" arg) = do
+    (PieceMove _ a b) <- fromDynamic arg
+    return $ Left $ Move a b
+mayCapture (Event "Capture" arg) = do
+    (Capture p a b q) <- fromDynamic arg
+    return $ Right $ Capture p a b q
+mayCapture _ = Nothing
+
+type MayCapture = (Piece , Square , Square , Maybe Piece)
+
+turnStart :: HasCallStack => Rule s a
+turnStart _ = cause "TurnStart" ()
+
+checkEvents :: (Action -> Maybe a) -> Game s -> s -> [Action] -> Maybe a
+checkEvents p runner st acts = do
+    e <- either (Just . snd) (const Nothing) $ simGameUntil (isJust . p) runner acts st
+    p e -- TODO undouble work by inlining into simulateUntil?
+
+markMoves :: Typeable a => Game ChessState -> String -> String -> Proxy a -> Lens' s ChessState -> Rule s ()
+markMoves g bypassStart bypassEnd (Proxy @a) chess_ () = do
+    let bypassRules' = g
+
+    let bypassRules = if bypassStart /= bypassEnd
+        then overwriteRule bypassStart (idRule bypassEnd :: Rule ChessState a) bypassRules'
+        else bypassRules'
+
+    currentTurn <- use $ chess_ . toMove
+    st <- use chess_
+
+    whenJust currentTurn $ \ c -> do
+        pieces <- filter (\ (_ , (_ , c')) -> c == c') . M.toList <$> use (chess_ . board)
+
+        let tiles = [(i, j) | i <- [0..7], j <- [0..7]]
+        let allMoves = [(p, a, b) | (a, p) <- pieces , b <- tiles ]
+        let allMoves' = [[mkEvent "UncheckedMovePiece" $ PieceMove p a b] | (p, a, b) <- allMoves ]
+
+        let validMoves = mapMaybe (checkEvents mayCapture bypassRules st) allMoves'
+
+        --effect $ print validMoves
+
+        chess_ . moveCache . at c ?= fmap (either id $ \ (Capture _ a b _) -> Move a b) validMoves
+        chess_ . captureCache . at c ?= mapMaybe (either (const Nothing) Just) validMoves
+
+        cause "StaleCheck" ()
+
+checkers :: HasCallStack => Lens' s Turn -> Lens' s CaptureCache -> Rule s PieceMove
+checkers turn_ captures_ (PieceMove p x y) = do
+    currentTurn <- use $ turn_ . to turnColour
+    whenJust currentTurn $ \ c -> do
+        maybeCaptures <- use $ captures_ . at c
+        let captures = fromMaybe [] maybeCaptures
+        let moves = map ( \ (Capture _ a b _) -> (a , b)) captures
+
+        when (null captures || (x, y) `elem` moves) $ do
+            cause "UncheckedMoveCheckers" (PieceMove p x y)
+
+notColour :: Colour -> Colour
+notColour White = Black
+notColour Black = White
+
+antiChess :: HasCallStack => Rule s Colour
+antiChess c = do
+    cause "AntiWin" (notColour c)
+
+stratego :: HasCallStack => Rule s SendDrawTileImage
+stratego (SendDrawTileImage c a p s) = do
+    case p of
+        Nothing -> do
+            cause "SendDrawTileImageStratego" $ SendDrawTileImage c a p s
+        Just (_, c') -> do
+            let p' = if c == c' then p else Just ("question.svg", c')
+            cause "SendDrawTileImageStratego" $ SendDrawTileImage c a p' s
+
+nullMove :: HasCallStack => String -> Rule s PieceMove
+nullMove o m@(PieceMove _ a b) = do
+    unless (a == b) $ do
+        cause o m
+
+data StaleResult a = Draw | Skip | Lose a
+
+-- NOTE: If you have checks+staleMate you NEED checkMates, otherwise a "checkmate" can just result in a draw
+staleCond :: HasCallStack => (Colour -> StaleResult Colour) -> Lens' s MoveCache -> Lens' s Turn -> Rule s a
+staleCond loser moveCache_ turn_ _ = do
+    currentTurn <- use $ turn_ . to turnColour
+
+    whenJust currentTurn $ \ c -> do
+        moves <- use $ moveCache_ . at c . to (fromMaybe [])
+        when (null moves) $ do
+            case loser c of
+                Draw    -> cause "Draw" ()
+                Skip    -> cause "NextTurn" ()
+                Lose c' -> cause "Lose" c'
+
+staleMate :: Lens' s MoveCache -> Lens' s Turn -> Rule s a
+staleMate = staleCond (const Draw)
+
+staleLose :: Lens' s MoveCache -> Lens' s Turn -> Rule s a
+staleLose = staleCond Lose
+
+staleSkip :: Lens' s MoveCache -> Lens' s Turn -> Rule s a
+staleSkip = staleCond (const Skip)
+
+strategoCaptures :: (PieceType -> PieceType -> Maybe Ordering) -> Rule s Capture
+strategoCaptures canCapture cap@(Capture p x y q) = do
+    whenJust (canCapture (fst p) (fst q)) $ \case
+        GT  -> do
+            cause "StrategoCapture" cap
+        EQ  -> do
+            cause "Take" $ Take p y q
+            cause "Take" $ Take q x p
+            cause "MoveEnd" ()
+        LT -> do
+            cause "Take" $ Take q x p
+            cause "MoveEnd" ()
+
+-- attacker advantage
+strategoCapturesAA :: Rule s Capture
+strategoCapturesAA = strategoCaptures $ (Just .) . on (compare . (4+)) pieceValue
+
+-- TODO lazy
+serveBoardTiles :: HasCallStack => Rule s Colour
+serveBoardTiles c = do
+    forM_ squares $ \ col -> do
+        forM_ col $ \a -> do
+            cause "SendTile" (c, a)

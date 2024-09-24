@@ -27,7 +27,9 @@ library
   exposed-modules:
       Chess
       Chess.Game
+      Chess.Internal
       Chess.Rules
+      Chess.Structure
   other-modules:
       Paths_hchess
   autogen-modules:
@@ -39,15 +41,12 @@ library
       aeson
     , base >=4.7 && <5
     , bimap
-    , bytestring
     , containers
     , lens
     , parsec
     , stm
     , transformers
     , unbounded-delays
-    , wai
-    , wai-websockets
     , websockets
   default-language: Haskell2010
 

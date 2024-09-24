@@ -1,6 +1,10 @@
 #
 chess_server.json
 
+# NPM
+node_modules
+package-lock.json
+
 # Cabal and GHC build artefacts
 dist/
 dist-newstyle/

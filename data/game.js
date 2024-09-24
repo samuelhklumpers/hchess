@@ -3,10 +3,14 @@ const room = urlParams.get('room');
 const mode = urlParams.get('mode');
 const user = urlParams.get('user');
 const colour = urlParams.get('colour');
+const opts = urlParams.getAll('opts');
+const fen = urlParams.get('fen');
 
 displayfield = document.querySelector("#playfield");
 overfield = document.querySelector("#overlay");
 statusbox = document.querySelector("#status");
+field = document.querySelector("#field-container");
+yourTurn = document.querySelector("#sampleStatusChanged");
 playfield = [];
 overlay = [];
 
@@ -37,6 +41,9 @@ function draw_and_cache(shape, ix, colour) {
 function draw_and_cache_(shape, ix, raw, col) {
     im = toHTML(raw);
     im.setAttribute("class", "square");
+    if (black) {
+        im.classList.add("flipped");
+    }
     imageCache[shape] = im
     draw_svg(ix, im.cloneNode(true), col);
 }
@@ -99,7 +106,7 @@ function process(effect, args) {
             shape = "";
             
             if (piece) {
-                [shape, _] = piece;
+                shape = piece;
             }
             
             let cell = playfield[i][j];
@@ -143,6 +150,7 @@ function process(effect, args) {
         }
         case "Status": {
             statusbox.innerHTML = args;
+            yourTurn.play();
             break;
         }
         case "SelectTile": {
@@ -186,11 +194,16 @@ socket.onmessage = function (event) {
     }
     msg.text().then(f);
 };
-    
+
 socket.onopen = function (_) {
-    socket.send(aesonEncode([room, user, colour], "Register"));
+    //console.log(aesonEncode([room, user, opts], "Register"));
+    socket.send(aesonEncode([room, user, colour, opts, fen], "Register"));
 };
 
+
+socket.onclose = function (_) {
+    statusbox.innerHTML = "Disconnected";
+}
 
 function aeson(contents, tag) {
     return {"contents": contents, "tag": tag};
@@ -246,3 +259,8 @@ function createBoard(n, m) {
 }
 
 createBoard(8,8);
+
+let black = colour == "Black";
+if (black) {
+    field.classList.add("flipped");
+}

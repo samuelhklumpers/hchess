@@ -18,7 +18,7 @@ import WaiAppStatic.Types (MaxAge(..))
 cfgFileName :: FilePath
 cfgFileName = "chess_server.json"
 
-data Cfg = Cfg { http_port :: Int , game_port :: Int , data_dir :: String } deriving Generic
+data Cfg = Cfg { http_port :: Int , game_port :: Int , data_dir :: String } deriving (Generic, Show)
 
 instance FromJSON Cfg where
 
@@ -30,7 +30,7 @@ findConfig dir = do
     else
         if isDrive dir then
             return Nothing
-        else
+        else do
             findConfig (takeDirectory dir)
     where
     fp = dir </> cfgFileName
@@ -38,7 +38,8 @@ findConfig dir = do
 
 main :: IO ()
 main = do
-    maybeCfg <- findConfig "."
+    path <- canonicalizePath "."
+    maybeCfg <- findConfig path
 
     case maybeCfg of 
         Nothing  -> return ()

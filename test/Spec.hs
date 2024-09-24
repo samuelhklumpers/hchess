@@ -1,19 +1,6 @@
-import Lib
-
-main :: IO ()
-main = do
-    newState <- chessRunner chessInitial
-        [ Touch White (4, 6), Touch White (4, 4)
-        , Touch Black (0, 1), Touch Black (0, 2)
-        , Touch White (4, 4), Touch White (4, 3)
-        , Touch Black (3, 1), Touch Black (3, 3)
-        , Touch White (4, 3), Touch White (3, 2)
-        , Touch Black (0, 2), Touch Black (0, 3)
-        , Touch White (3, 2), Touch White (2, 1)] 
-
-    putStrLn "All good!"
-
-
+{-# LANGUAGE TupleSections #-}
+import Chess
+import Chess.Structure
 
 testEnPassant :: IO ()
 testEnPassant = do
@@ -63,18 +50,41 @@ testLongCastle = do
     else
         putStrLn ":("
 
+
+        testQueen :: IO ()
+testQueen = do
+    _ <- chessRunner chessInitial $ map (uncurry Event . ("Touch",) . toDyn)
+        [ PlayerTouch White (4, 6)
+        , PlayerTouch White (4, 4)
+        , PlayerTouch Black (0, 1)
+        , PlayerTouch Black (0, 2)
+        , PlayerTouch White (3, 7)
+        , PlayerTouch White (7, 3)]
+    return ()
+
 testPromotion :: IO ()
 testPromotion = do
-    newState <- chessRunner chessInitial
-        [ Touch White (3, 1), Touch White (3, 0) , Promote White "Q" ]
+    let targetBoard = fromRight undefined $ parseFEN "2R5/3P4/8/8/8/4kp2/P7/5K2"
+    newState <- chessRunner (chessInitial { _board = targetBoard }) $ map (uncurry Event)
+        [ ("PrintBoard", toDyn ())
+        , ("Touch", toDyn $ PlayerTouch White (3, 1))
+        , ("Touch", toDyn $ PlayerTouch White (3, 0))
+        , ("TryPromote", toDyn (White, "Q" :: String))
+        , ("Touch", toDyn $ PlayerTouch Black (4, 5))
+        , ("Touch", toDyn $ PlayerTouch Black (3, 5))
+        , ("Touch", toDyn $ PlayerTouch White (3, 0))
+        , ("Touch", toDyn $ PlayerTouch White (3, 5))]
 
-    let targetBoard = parseFEN "2R5/3P4/8/8/8/4kp2/P7/5K2"
     let targetState = chessInitial {
-        _board = fromRight undefined targetBoard,
-        _turn  = 9
+        _board = targetBoard,
+        _turn  = Normal 9
     }
 
-    if newState == targetState then
+    if _board newState == _board targetState then
         putStrLn "All good!"
     else
         putStrLn ":("
+
+    putStrLn $ ppBoard $ _board newState
+    putStrLn ""
+    putStrLn $ ppBoard $ _board targetState
