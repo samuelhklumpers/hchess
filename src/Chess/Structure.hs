@@ -122,6 +122,14 @@ pieceImage B = "bishop.svg"
 pieceImage N = "knight.svg"
 pieceImage P = "pawn.svg"
 
+pieceValue :: PieceType -> Int
+pieceValue K = 1
+pieceValue Q = 9
+pieceValue R = 5
+pieceValue B = 3
+pieceValue N = 3
+pieceValue P = 1
+
 moveNumber :: Turn -> Int
 moveNumber (Normal n) = n
 moveNumber (Promoting n _) = n

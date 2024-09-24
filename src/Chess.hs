@@ -36,17 +36,17 @@ import Chess.Internal
 import Chess.Structure
 import Chess.Rules
 import Control.Concurrent (myThreadId, ThreadId)
-import Data.Function (fix)
+import Data.Function (fix, on)
 import Debug.Trace (trace)
 import Network.WebSockets.Connection (connectionSentClose)
 import Data.Functor (void)
 import Data.Proxy (Proxy(..))
 
 
-chess' :: HasCallStack => Game ChessState -> Game ChessState
-chess' self = mempty
+chess' :: HasCallStack => ChessBuilder -> Game ChessState -> Game ChessState
+chess' self this = this
     & registerRule "Touch" (playerTouch touch)
-        & registerRule "UpdateSelection" (markAvailableMoves self id)
+        & registerRule "UpdateSelection" (markAvailableMoves (self mempty) id)
         & registerRule "UpdateSelection" (clearAvailableMoves touch)
         & registerRule "UpdateSelection" (updateSelection touch)
         & registerRule "SendSelect" (sendSelect board)
@@ -88,7 +88,6 @@ chess' self = mempty
     & registerRule "MoveEnd" (nMoveRule 50 turn zeroing)
     & registerRule "MoveEnd" (nFoldRepetition 3 board history)
     & registerRule "MoveEnd" (winRule board)
-        & registerRule "Win" winClose
     & registerRule "NextTurn" (nextSubTurn turn promoting)
         & registerRule "NextSubTurn" (promotionPrompt turn)
             & registerRule "NextSubTurn" (nextTurnSendStatus turn)
@@ -102,6 +101,8 @@ chess' self = mempty
     & registerRule "TestCloseRoom" (testCloseRoom closing)
     & registerRule "Draw" sendDraw
     & registerRule "Win" sendWin
+    & registerRule "Win" (winClose :: Chess Colour)
+    & registerRule "Draw" (winClose :: Chess ()) 
 
     & registerRule "SendBoardAll" serveBoardAll
     & registerRule "SendTileAll" serveDrawTileAll
@@ -116,10 +117,15 @@ chess' self = mempty
 
     & registerRule "MoveEnd" movePrintBoard
 
+    & registerRule "TurnStart" (idRule "MarkMoves" :: Chess ()) -- TODO bypassing should probably not be like this
+    & registerRule "MarkMoves" (markMoves self "UncheckedMoveSelf" "UncheckedMoveSelf" (Proxy @PieceMove) id)
+    & registerRule "StaleCheck" (staleMate moveCache turn :: Rule ChessState ())
+
+
     -- hush
     & registerRule "PrintBoard" (returnRule :: Rule ChessState ())
     & registerRule "SendRaw" (returnRule :: Rule ChessState SendRaw)
-    & registerRule "TurnStart" (returnRule :: Rule ChessState ())
+    -- & registerRule "TurnStart" (returnRule :: Rule ChessState ())
 
 
 --data ChessOpts = Atomic -- | Checkers | SelfCapture
@@ -140,26 +146,28 @@ applyChessOpt "RTS" _ = overwriteRule "Touch1" (idRule "Touch1Turn" :: Chess Pla
 applyChessOpt "SelfCapture" _ = overwriteRule "UncheckedMoveTurn" (idRule "UncheckedMoveSelf" :: Chess PieceMove)
 applyChessOpt "Anti" _ = spliceRule "Win" "AntiWin" antiChess
 applyChessOpt "Checkers" self = spliceRule "UncheckedMoveSelf" "UncheckedMoveCheckers" (checkers turn captureCache)
-                              . registerRule "TurnStart" (markMoves self "UncheckedMoveSelf" "UncheckedMoveCheckers" (Proxy @PieceMove) id)
-applyChessOpt "Stratego" _ = spliceRule "SendDrawTileImage" "SendDrawTileImageStratego" stratego
-                           . overwriteRule "SendBoard" serveBoardTiles
+                              . overwriteRule "MarkMoves" (markMoves self "UncheckedMoveSelf" "UncheckedMoveCheckers" (Proxy @PieceMove) id)
+applyChessOpt "StrategoV" _ = spliceRule "SendDrawTileImage" "SendDrawTileImageStratego" stratego
+                            . overwriteRule "SendBoard" serveBoardTiles
+applyChessOpt "StrategoC" _ = spliceRule "Capture" "StrategoCapture" (strategoCaptures $ (Just .) . on (<=) pieceValue)
 applyChessOpt opt _ = trace ("Unrecognized option: " ++ opt)
 
 chessWithOpts :: [ChessOpts] -> ChessBuilder -> ChessBuilder
-chessWithOpts []           _    = id
+chessWithOpts []           self = chess' self
 chessWithOpts (opt : opts) self = chessWithOpts opts self . applyChessOpt opt self
 
 type ChessBuilder = Game ChessState -> Game ChessState
 
 
 chess :: Game ChessState
-chess = chess' chess
+chess = fix chess' mempty
 
 
 secondUs :: Integer
 secondUs = 1000 * 1000
 
-data ChessMessage = TouchMsg Square | Register String String Colour [ChessOpts] | PromoteMsg String | Ping deriving (Show, Eq, Generic)
+type FEN = String
+data ChessMessage = TouchMsg Square | Register String String Colour [ChessOpts] (Maybe FEN) | PromoteMsg String | Ping deriving (Show, Eq, Generic)
 
 --instance ToJSON ChessOpts
 --instance FromJSON ChessOpts
@@ -172,15 +180,17 @@ interpretMessage p (TouchMsg a) = Just $ Event "Touch" $ toDyn (PlayerTouch p a)
 interpretMessage p (PromoteMsg str) = Just $ Event "TryPromote" $ toDyn (p , str)
 interpretMessage _ _ = Nothing
 
-type Registration = (String, String, Colour, [ChessOpts])
+type Registration = (String, String, Colour, [ChessOpts], Maybe FEN)
 
 fromRegister :: ChessMessage -> Maybe Registration
-fromRegister (Register a b c d) = Just (a , b , c , d)
+fromRegister (Register a b c d e) = Just (a , b , c , d, e)
 fromRegister _ = Nothing
 
 instance Eq Connection where
     c == c' = connectionSentClose c == connectionSentClose c'
 
+rightToMaybe :: Either a b -> Maybe b
+rightToMaybe = either (const Nothing) Just
 
 chessApp :: TMVar (M.Map String (TMVar (M.Map Colour [Connection]))) -> TMVar (M.Map String (TMVar (ChessState, Game ChessState))) -> ThreadId -> ServerApp
 chessApp refRefConn refRefGame serverThreadId pending = handle (throwTo serverThreadId :: SomeException -> IO ()) $ void (runMaybeT acceptor)
@@ -190,13 +200,17 @@ chessApp refRefConn refRefGame serverThreadId pending = handle (throwTo serverTh
     acceptor = do
         conn <- liftIO $ acceptRequest pending
         msg  <- MaybeT $ catch (timeout (30 * secondUs) $ receiveDataMessage conn) $ \ (_ :: ConnectionException) -> return Nothing
-        (room, ident, colour, opts) <- hoistMaybe $ decode (fromDataMessage msg) >>= fromRegister
+        (room, ident, colour, opts, maybeFEN) <- hoistMaybe $ decode (fromDataMessage msg) >>= fromRegister
 
         --liftIO $ print opts
-        let ruleset = chessWithOpts opts ruleset . chess'
+        let ruleset = chessWithOpts opts ruleset
         --liftIO $ print $ fst $ fix $ ruleset
 
-        refGame <- liftIO $ withTMVarIO refRefGame $ setdefaultM room $ newTMVarIO (chessInitial, fix ruleset)
+        let initialState = case maybeFEN >>= rightToMaybe . parseFEN of
+                Nothing -> chessInitial 
+                Just x  -> chessInitial { _board = x }
+
+        refGame <- liftIO $ withTMVarIO refRefGame $ setdefaultM room $ newTMVarIO (initialState, ruleset mempty)
         refConn <- liftIO $ withTMVarIO refRefConn $ \ connRefM -> do
             case M.lookup room connRefM of
                 Nothing     -> do

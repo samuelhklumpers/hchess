@@ -3,6 +3,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Chess.Rules  ( module Chess.Game , module Chess.Rules ) where
 
@@ -54,9 +55,10 @@ playerTouch touch_ (PlayerTouch c y) = do
             cause "Touch2" $ PieceMove p x y
             cause "UpdateSelection" $ PlayerTouch c x
 
-isCheckedMove :: Action -> Bool
-isCheckedMove (Event e _) = e == "CheckedMovePiece"
-isCheckedMove _ = False
+-- for some notion of "completing" a move
+moveCompleted :: Action -> Bool
+moveCompleted (Event e _) = e == "MoveEnd"
+moveCompleted _ = False
 
 markAvailableMoves :: HasCallStack => Game ChessState -> Lens' s ChessState -> Rule s PlayerTouch
 markAvailableMoves g chess (PlayerTouch c _) = do
@@ -66,7 +68,7 @@ markAvailableMoves g chess (PlayerTouch c _) = do
 
     whenJust maybeSelected $ \ (a , _) ->
         forM_ [(i, j) | i <- [0..7], j <- [0..7]] $ \ b -> do
-            let res = simGameUntil isCheckedMove g [mkEvent "UncheckedMove" $ Move a b] currentState
+            let res = simGameUntil moveCompleted g [mkEvent "UncheckedMove" $ Move a b] currentState
             when (isLeft res) $ cause "SendMarkAvailableMove" (c, b)
 
 clearAvailableMoves :: HasCallStack => Lens' s Touch -> Rule s PlayerTouch
@@ -261,7 +263,6 @@ moveMayCapture board_ (PieceMove p x y) = do
     case target of
         Nothing -> cause "NonCapture" (PieceMove p x y)
         Just q  -> cause "Capture" (Capture p x y q)
-    cause "MoveEnd" ()
 
 captureZero :: HasCallStack => Rule s Capture
 captureZero _ = do
@@ -275,11 +276,13 @@ zeroRule turn_ zeroing_ () = do
 nonCapture :: HasCallStack => Rule s PieceMove
 nonCapture (PieceMove p x y) = do
     cause "RawMove" $ PieceMove p x y
+    cause "MoveEnd" ()
 
 capture :: HasCallStack => Rule s Capture
 capture (Capture p x y q) = do
     cause "Take" $ Take p y q
     cause "RawMove" $ PieceMove p x y
+    cause "MoveEnd" ()
 
 rawMove :: HasCallStack => Rule s PieceMove
 rawMove (PieceMove p x y) = do
@@ -364,7 +367,7 @@ winRule board_ () = do
             Nothing -> cause "Win" White
             Just _  -> cause "NextTurn" ()
 
-winClose :: HasCallStack => Rule s Colour
+winClose :: HasCallStack => Rule s a
 winClose _ = cause "CloseRoom" ()
 
 nextTurnSendStatus :: HasCallStack => Lens' s Turn -> Rule s ()
@@ -515,7 +518,11 @@ checkEvents p runner st acts = do
 
 markMoves :: Typeable a => (Game ChessState -> Game ChessState) -> String -> String -> Proxy a -> Lens' s ChessState -> Rule s ()
 markMoves g bypassStart bypassEnd (Proxy @a) chess_ () = do
-    let bypassRules = fix $ overwriteRule bypassStart (idRule bypassEnd :: Rule ChessState a) . g
+    let bypassRules' = g mempty
+
+    let bypassRules = if bypassStart /= bypassEnd
+        then overwriteRule bypassStart (idRule bypassEnd :: Rule ChessState a) bypassRules'
+        else bypassRules'
 
     currentTurn <- use $ chess_ . toMove
     st <- use chess_
@@ -533,6 +540,8 @@ markMoves g bypassStart bypassEnd (Proxy @a) chess_ () = do
 
         chess_ . moveCache . at c ?= fmap (either id $ \ (Capture _ a b _) -> Move a b) validMoves
         chess_ . captureCache . at c ?= mapMaybe (either (const Nothing) Just) validMoves
+
+        cause "StaleCheck" ()
 
 checkers :: HasCallStack => Lens' s Turn -> Lens' s CaptureCache -> Rule s PieceMove
 checkers turn_ captures_ (PieceMove p x y) = do
@@ -555,7 +564,7 @@ antiChess c = do
 
 stratego :: HasCallStack => Rule s SendDrawTileImage
 stratego (SendDrawTileImage c a p s) = do
-    case p of 
+    case p of
         Nothing -> do
             cause "SendDrawTileImageStratego" $ SendDrawTileImage c a p s
         Just (_, c') -> do
@@ -565,7 +574,40 @@ stratego (SendDrawTileImage c a p s) = do
 nullMove :: HasCallStack => String -> Rule s PieceMove
 nullMove o m@(PieceMove _ a b) = do
     unless (a == b) $ do
-        cause o m 
+        cause o m
+
+data StaleResult a = Draw | Skip | Lose a
+
+-- NOTE: If you have checks+staleMate you NEED checkMates, otherwise a "checkmate" can just result in a draw
+staleCond :: HasCallStack => (Colour -> StaleResult Colour) -> Lens' s MoveCache -> Lens' s Turn -> Rule s a
+staleCond loser moveCache_ turn_ _ = do
+    currentTurn <- use $ turn_ . to turnColour
+
+    whenJust currentTurn $ \ c -> do
+        moves <- use $ moveCache_ . at c . to (fromMaybe [])
+        when (null moves) $ do
+            case loser c of
+                Draw    -> cause "Draw" ()
+                Skip    -> cause "NextTurn" ()
+                Lose c' -> cause "Lose" c'
+
+staleMate :: Lens' s MoveCache -> Lens' s Turn -> Rule s a
+staleMate = staleCond (const Draw)
+
+staleLose :: Lens' s MoveCache -> Lens' s Turn -> Rule s a
+staleLose = staleCond Lose
+
+staleSkip :: Lens' s MoveCache -> Lens' s Turn -> Rule s a
+staleSkip = staleCond (const Skip)
+
+strategoCaptures :: (PieceType -> PieceType -> Maybe Bool) -> Rule s Capture
+strategoCaptures canCapture cap@(Capture p x _ q) = do
+    whenJust (canCapture (fst p) (fst q)) $ \case
+        True  -> do
+            cause "StrategoCapture" cap
+        False -> do
+            cause "Take" $ Take q x p
+            cause "NextTurn" ()
 
 -- TODO lazy
 serveBoardTiles :: HasCallStack => Rule s Colour
