@@ -12,7 +12,7 @@ import qualified Data.Bimap as B
 
 import Data.Maybe (isNothing, isJust, mapMaybe, fromMaybe)
 import Control.Lens ( use, (%=), (.=), at, (?=), to , _1   , (.~), Lens' )
-import Control.Monad (when, forM_)
+import Control.Monad (when, forM_, unless)
 import Data.List (uncons)
 import Network.WebSockets
     ( Connection, sendBinaryData )
@@ -561,6 +561,11 @@ stratego (SendDrawTileImage c a p s) = do
         Just (_, c') -> do
             let p' = if c == c' then p else Just ("question.svg", c')
             cause "SendDrawTileImageStratego" $ SendDrawTileImage c a p' s
+
+nullMove :: HasCallStack => String -> Rule s PieceMove
+nullMove o m@(PieceMove _ a b) = do
+    unless (a == b) $ do
+        cause o m 
 
 -- TODO lazy
 serveBoardTiles :: HasCallStack => Rule s Colour

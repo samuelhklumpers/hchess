@@ -70,6 +70,7 @@ chess' self = mempty
             & registerRule "UncheckedPMove" (pawnDoubleMove board turn enpassant)
             & registerRule "UncheckedPMove" (pawnCapture board)
             & registerRule "UncheckedPMove" (pawnEP turn enpassant)
+        & spliceRule "UncheckedMoveSelf" "UncheckedMoveNull" (nullMove "UncheckedMoveNull")
 
         & registerRule "PromotionCheck" (promotionCheck promoting)
         & registerRule "CheckedMovePiece" pawnZero
