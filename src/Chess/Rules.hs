@@ -516,9 +516,9 @@ checkEvents p runner st acts = do
     e <- either (Just . snd) (const Nothing) $ simGameUntil (isJust . p) runner acts st
     p e -- TODO undouble work by inlining into simulateUntil?
 
-markMoves :: Typeable a => (Game ChessState -> Game ChessState) -> String -> String -> Proxy a -> Lens' s ChessState -> Rule s ()
+markMoves :: Typeable a => Game ChessState -> String -> String -> Proxy a -> Lens' s ChessState -> Rule s ()
 markMoves g bypassStart bypassEnd (Proxy @a) chess_ () = do
-    let bypassRules' = g mempty
+    let bypassRules' = g
 
     let bypassRules = if bypassStart /= bypassEnd
         then overwriteRule bypassStart (idRule bypassEnd :: Rule ChessState a) bypassRules'

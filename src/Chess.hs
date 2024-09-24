@@ -43,10 +43,10 @@ import Data.Functor (void)
 import Data.Proxy (Proxy(..))
 
 
-chess' :: HasCallStack => ChessBuilder -> Game ChessState -> Game ChessState
-chess' self this = this
+chess' :: HasCallStack => Game ChessState -> Game ChessState
+chess' self = mempty
     & registerRule "Touch" (playerTouch touch)
-        & registerRule "UpdateSelection" (markAvailableMoves (self mempty) id)
+        & registerRule "UpdateSelection" (markAvailableMoves self id)
         & registerRule "UpdateSelection" (clearAvailableMoves touch)
         & registerRule "UpdateSelection" (updateSelection touch)
         & registerRule "SendSelect" (sendSelect board)
@@ -146,21 +146,21 @@ applyChessOpt "RTS" _ = overwriteRule "Touch1" (idRule "Touch1Turn" :: Chess Pla
 applyChessOpt "SelfCapture" _ = overwriteRule "UncheckedMoveTurn" (idRule "UncheckedMoveSelf" :: Chess PieceMove)
 applyChessOpt "Anti" _ = spliceRule "Win" "AntiWin" antiChess
 applyChessOpt "Checkers" self = spliceRule "UncheckedMoveSelf" "UncheckedMoveCheckers" (checkers turn captureCache)
-                              . overwriteRule "MarkMoves" (markMoves self "UncheckedMoveSelf" "UncheckedMoveCheckers" (Proxy @PieceMove) id)
+                              . overwriteRule "MarkMoves" (markMoves (fix self) "UncheckedMoveSelf" "UncheckedMoveCheckers" (Proxy @PieceMove) id)
 applyChessOpt "StrategoV" _ = spliceRule "SendDrawTileImage" "SendDrawTileImageStratego" stratego
                             . overwriteRule "SendBoard" serveBoardTiles
-applyChessOpt "StrategoC" _ = spliceRule "Capture" "StrategoCapture" (strategoCaptures $ (Just .) . on (<=) pieceValue)
+applyChessOpt "StrategoC" _ = spliceRule "Capture" "StrategoCapture" (strategoCaptures $ (Just .) . on (>=) pieceValue)
 applyChessOpt opt _ = trace ("Unrecognized option: " ++ opt)
 
 chessWithOpts :: [ChessOpts] -> ChessBuilder -> ChessBuilder
-chessWithOpts []           self = chess' self
+chessWithOpts []           _ = id
 chessWithOpts (opt : opts) self = chessWithOpts opts self . applyChessOpt opt self
 
 type ChessBuilder = Game ChessState -> Game ChessState
 
 
 chess :: Game ChessState
-chess = fix chess' mempty
+chess = fix chess'
 
 
 secondUs :: Integer
@@ -203,14 +203,14 @@ chessApp refRefConn refRefGame serverThreadId pending = handle (throwTo serverTh
         (room, ident, colour, opts, maybeFEN) <- hoistMaybe $ decode (fromDataMessage msg) >>= fromRegister
 
         --liftIO $ print opts
-        let ruleset = chessWithOpts opts ruleset
+        let ruleset = chessWithOpts opts ruleset . chess'
         --liftIO $ print $ fst $ fix $ ruleset
 
         let initialState = case maybeFEN >>= rightToMaybe . parseFEN of
                 Nothing -> chessInitial 
                 Just x  -> chessInitial { _board = x }
 
-        refGame <- liftIO $ withTMVarIO refRefGame $ setdefaultM room $ newTMVarIO (initialState, ruleset mempty)
+        refGame <- liftIO $ withTMVarIO refRefGame $ setdefaultM room $ newTMVarIO (initialState, fix ruleset)
         refConn <- liftIO $ withTMVarIO refRefConn $ \ connRefM -> do
             case M.lookup room connRefM of
                 Nothing     -> do
