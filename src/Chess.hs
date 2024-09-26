@@ -36,97 +36,123 @@ import Chess.Internal
 import Chess.Structure
 import Chess.Rules
 import Control.Concurrent (myThreadId, ThreadId)
-import Data.Function (fix, on)
+import Data.Function (fix)
 import Debug.Trace (trace)
 import Network.WebSockets.Connection (connectionSentClose)
 import Data.Functor (void)
 import Data.Proxy (Proxy(..))
+import Control.Monad.Trans.State.Lazy (StateT, modify, execStateT)
+import Control.Monad.Trans.Reader (Reader, ask, runReader)
+import Data.Typeable (Typeable)
 
+type ChessGame = Game ChessState
+type Build a = StateT a (Reader a) ()
 
-chess' :: HasCallStack => Game ChessState -> Game ChessState
-chess' self = mempty
-    & registerRule "Touch" (playerTouch touch)
-        & registerRule "UpdateSelection" (markAvailableMoves self id)
-        & registerRule "UpdateSelection" (clearAvailableMoves touch)
-        & registerRule "UpdateSelection" (updateSelection touch)
-        & registerRule "SendSelect" (sendSelect board)
+registerRuleS :: (Monad m, Typeable a) => String -> Rule s a -> StateT (Game s) m ()
+registerRuleS e a = modify $ registerRule e a
 
-        & registerRule "Touch1" (touch1Turn turn)
-        & registerRule "Touch1Turn" (touch1Piece board)
-        & registerRule "Touch1Piece" (touch1Colour touch)
+spliceRuleS :: (Monad m, Typeable a) => String -> String -> Rule s a -> StateT (Game s) m ()
+spliceRuleS e e' a = modify $ spliceRule e e' a
 
-    & registerRule "Touch2" touch2
-    & registerRule "UncheckedMove" (uncheckedMovePiece board) -- TODO how does zooming interact with compiling?
-        & registerRule "UncheckedMovePiece" (uncheckedMoveTurn turn)
-        & registerRule "UncheckedMoveTurn" (uncheckedMoveSelf board)
-        & registerRule "UncheckedMoveSelf" specializeMove
-            & registerRule "UncheckedKMove" (kingMove castling)
-            & registerRule "UncheckedKMove" (castlingMove board castling)
-            & registerRule "UncheckedQMove" (queenMove board)
-            & registerRule "UncheckedRMove" (rookMove board castling)
-            & registerRule "UncheckedBMove" (bishopMove board)
-            & registerRule "UncheckedNMove" knightMove
-            & registerRule "UncheckedPMove" (pawnMove board)
-            & registerRule "UncheckedPMove" (pawnDoubleMove board turn enpassant)
-            & registerRule "UncheckedPMove" (pawnCapture board)
-            & registerRule "UncheckedPMove" (pawnEP turn enpassant)
-        & spliceRule "UncheckedMoveSelf" "UncheckedMoveNull" (nullMove "UncheckedMoveNull")
+overwriteRuleS :: (Monad m, Typeable a) => String -> Rule s a -> StateT (Game s) m ()
+overwriteRuleS e a = modify $ overwriteRule e a
 
-        & registerRule "PromotionCheck" (promotionCheck promoting)
-        & registerRule "CheckedMovePiece" pawnZero
+build :: Monoid a => Build a -> a
+build b = fix $ runReader (execStateT b mempty)
 
-    & registerRule "CheckedMovePiece" (moveMayCapture board)
-        & registerRule "NonCapture" nonCapture
-        & registerRule "Capture" captureZero
-            & registerRule "Zeroing" (zeroRule turn zeroing)
-        & registerRule "Capture" capture
+chessBuilder :: HasCallStack => Build ChessGame
+chessBuilder = do
+    self <- lift ask
+    registerRuleS "Touch" (playerTouch touch)
+    _ <- do
+        registerRuleS "UpdateSelection" (markAvailableMoves self id)
+        registerRuleS "UpdateSelection" (clearAvailableMoves touch)
+        registerRuleS "UpdateSelection" (updateSelection touch)
+        registerRuleS "SendSelect" (sendSelect board)
+        registerRuleS "Touch1" (touch1Turn turn)
+        registerRuleS "Touch1Turn" (touch1Piece board)
+        registerRuleS "Touch1Piece" (touch1Colour touch)
+    registerRuleS "Touch2" touch2
+    registerRuleS "UncheckedMove" (uncheckedMovePiece board) -- TODO how does zooming interact with compiling?
+    _ <- do
+        registerRuleS "UncheckedMovePiece" (uncheckedMoveTurn turn)
+        registerRuleS "UncheckedMoveTurn" (uncheckedMoveSelf board)
+        registerRuleS "UncheckedMoveSelf" specializeMove
+        _ <- do
+            registerRuleS "UncheckedKMove" (kingMove castling)
+            registerRuleS "UncheckedKMove" (castlingMove board castling)
+            registerRuleS "UncheckedQMove" (queenMove board)
+            registerRuleS "UncheckedRMove" (rookMove board castling)
+            registerRuleS "UncheckedBMove" (bishopMove board)
+            registerRuleS "UncheckedNMove" knightMove
+            registerRuleS "UncheckedPMove" (pawnMove board)
+            registerRuleS "UncheckedPMove" (pawnDoubleMove board turn enpassant)
+            registerRuleS "UncheckedPMove" (pawnCapture board)
+            registerRuleS "UncheckedPMove" (pawnEP turn enpassant)
+        spliceRuleS "UncheckedMoveSelf" "UncheckedMoveNull" (nullMove "UncheckedMoveNull")
 
-        & registerRule "RawMove" rawMove
-        & registerRule "Take" rawTake
-            & registerRule "PutTile" (putTile board)
+        registerRuleS "PromotionCheck" (promotionCheck promoting)
+        registerRuleS "CheckedMovePiece" pawnZero
 
-    & registerRule "MoveEnd" (nMoveRule 50 turn zeroing)
-    & registerRule "MoveEnd" (nFoldRepetition 3 board history)
-    & registerRule "MoveEnd" (winRule board)
-    & registerRule "NextTurn" (nextSubTurn turn promoting)
-        & registerRule "NextSubTurn" (promotionPrompt turn)
-            & registerRule "NextSubTurn" (nextTurnSendStatus turn)
-            & registerRule "NextSubTurn" (turnStart :: Chess ()) -- TODO make this more accurate
-            & registerRule "TryPromote" (tryPromote turn promoting)
+    registerRuleS "CheckedMovePiece" (moveMayCapture board)
+    _ <- do
+        registerRuleS "NonCapture" nonCapture
+        registerRuleS "Capture" captureZero
+        _ <- do
+            registerRuleS "Zeroing" (zeroRule turn zeroing)
+        registerRuleS "Capture" capture
 
-    & registerRule "PlayerConnected" connectSendBoard
-    & registerRule "PlayerConnected" (turnStart :: Chess Colour) -- TODO don't do this instead do RoomCreated or so
+        registerRuleS "RawMove" rawMove
+        registerRuleS "Take" rawTake
+        _ <- do
+            registerRuleS "PutTile" (putTile board)
+        return ()
 
-    & registerRule "PlayerConnected" (connectSendStatus turn)
-    & registerRule "TestCloseRoom" (testCloseRoom closing)
-    & registerRule "Draw" sendDraw
-    & registerRule "Win" sendWin
-    & registerRule "Win" (winClose :: Chess Colour)
-    & registerRule "Draw" (winClose :: Chess ()) 
+    registerRuleS "MoveEnd" (nMoveRule 50 turn zeroing)
+    registerRuleS "MoveEnd" (nFoldRepetition 3 board history)
+    registerRuleS "MoveEnd" (winRule board)
+    registerRuleS "NextTurn" (nextSubTurn turn promoting)
+    _ <- do
+        registerRuleS "NextSubTurn" (promotionPrompt turn)
+    _ <- do
+            registerRuleS "NextSubTurn" (nextTurnSendStatus turn)
+            registerRuleS "NextSubTurn" (turnStart :: Chess ()) -- TODO make this more accurate
+            registerRuleS "TryPromote" (tryPromote turn promoting)
 
-    & registerRule "SendBoardAll" serveBoardAll
-    & registerRule "SendTileAll" serveDrawTileAll
-    & registerRule "SendTile" (sendTile board)
-    & registerRule "SendDrawTile" sendTileImage
-    & registerRule "SendDrawTileImage" serveDrawTile
-    & registerRule "SendBoard" (serveBoard board)
-    & registerRule "SendTurn" serveTurn
-    & registerRule "SendPromotionPrompt" servePromotionPrompt
-    & registerRule "SendMarkAvailableMove" serveMarkAvailableMove
-    & registerRule "SendClearAvailableMoves" serveClearAvailableMoves
+    registerRuleS "PlayerConnected" connectSendBoard
+    registerRuleS "PlayerConnected" (turnStart :: Chess Colour) -- TODO don't do this instead do RoomCreated or so
 
-    & registerRule "MoveEnd" movePrintBoard
+    registerRuleS "PlayerConnected" (connectSendStatus turn)
+    registerRuleS "TestCloseRoom" (testCloseRoom closing)
+    registerRuleS "Draw" sendDraw
+    registerRuleS "Win" sendWin
+    registerRuleS "Win" (winClose :: Chess Colour)
+    registerRuleS "Draw" (winClose :: Chess ())
 
-    & registerRule "TurnStart" (idRule "MarkMoves" :: Chess ()) -- TODO bypassing should probably not be like this
-    & registerRule "MarkMoves" (markMoves self "UncheckedMoveSelf" "UncheckedMoveSelf" (Proxy @PieceMove) id)
-    & registerRule "StaleCheck" (staleMate moveCache turn :: Rule ChessState ())
+    registerRuleS "SendBoardAll" serveBoardAll
+    registerRuleS "SendTileAll" serveDrawTileAll
+    registerRuleS "SendTile" (sendTile board)
+    registerRuleS "SendDrawTile" sendTileImage
+    registerRuleS "SendDrawTileImage" serveDrawTile
+    registerRuleS "SendBoard" (serveBoard board)
+    registerRuleS "SendTurn" serveTurn
+    registerRuleS "SendPromotionPrompt" servePromotionPrompt
+    registerRuleS "SendMarkAvailableMove" serveMarkAvailableMove
+    registerRuleS "SendClearAvailableMoves" serveClearAvailableMoves
+
+    registerRuleS "MoveEnd" movePrintBoard
+
+    registerRuleS "TurnStart" (idRule "MarkMoves" :: Chess ()) -- TODO bypassing should probably not be like this
+    registerRuleS "MarkMoves" (markMoves self "UncheckedMoveSelf" "UncheckedMoveSelf" (Proxy @PieceMove) id)
+    registerRuleS "StaleCheck" (staleMate moveCache turn :: Rule ChessState ())
 
 
     -- hush
-    & registerRule "PrintBoard" (returnRule :: Rule ChessState ())
-    & registerRule "SendRaw" (returnRule :: Rule ChessState SendRaw)
-    -- & registerRule "TurnStart" (returnRule :: Rule ChessState ())
+    registerRuleS "PrintBoard" (returnRule :: Rule ChessState ())
+    registerRuleS "SendRaw" (returnRule :: Rule ChessState SendRaw)
+    -- registerRuleS "TurnStart" (returnRule :: Rule ChessState ())
 
+    return ()
 
 --data ChessOpts = Atomic -- | Checkers | SelfCapture
 --    deriving (Show, Ord, Eq, Generic)
@@ -139,28 +165,35 @@ atomicDefaults =
     , (-1 ,  0), ( 0 ,  0), ( 1 ,  0)
     , (-1 ,  1), ( 0 ,  1), ( 1 ,  1)]
 
-applyChessOpt :: ChessOpts -> ChessBuilder -> ChessBuilder
-applyChessOpt "Atomic" _ = registerRule "Capture" (atomicExplosion atomicDefaults board)
-applyChessOpt "RTS" _ = overwriteRule "Touch1" (idRule "Touch1Turn" :: Chess PlayerTouch)
-                      . overwriteRule "UncheckedMovePiece" (idRule "UncheckedMoveTurn" :: Chess PieceMove)
-applyChessOpt "SelfCapture" _ = overwriteRule "UncheckedMoveTurn" (idRule "UncheckedMoveSelf" :: Chess PieceMove)
-applyChessOpt "Anti" _ = spliceRule "Win" "AntiWin" antiChess
-applyChessOpt "Checkers" self = spliceRule "UncheckedMoveSelf" "UncheckedMoveCheckers" (checkers turn captureCache)
-                              . overwriteRule "MarkMoves" (markMoves (fix self) "UncheckedMoveSelf" "UncheckedMoveCheckers" (Proxy @PieceMove) id)
-applyChessOpt "StrategoV" _ = spliceRule "SendDrawTileImage" "SendDrawTileImageStratego" stratego
-                            . overwriteRule "SendBoard" serveBoardTiles
-applyChessOpt "StrategoC" _ = spliceRule "Capture" "StrategoCapture" (strategoCapturesAA)
-applyChessOpt opt _ = trace ("Unrecognized option: " ++ opt)
+applyChessOpt :: ChessOpts -> Build ChessGame
+applyChessOpt "Atomic" = do
+    registerRuleS "Capture" (atomicExplosion atomicDefaults board)
+applyChessOpt "RTS"    = do 
+    overwriteRuleS "Touch1" (idRule "Touch1Turn" :: Chess PlayerTouch)
+    overwriteRuleS "UncheckedMovePiece" (idRule "UncheckedMoveTurn" :: Chess PieceMove)
+applyChessOpt "SelfCapture" = do
+    overwriteRuleS "UncheckedMoveTurn" (idRule "UncheckedMoveSelf" :: Chess PieceMove)
+applyChessOpt "Anti" = do
+    spliceRuleS "Win" "AntiWin" antiChess
+applyChessOpt "Checkers" = do
+    self <- lift ask
+    spliceRuleS "UncheckedMoveSelf" "UncheckedMoveCheckers" (checkers turn captureCache)
+    overwriteRuleS "MarkMoves" (markMoves self "UncheckedMoveSelf" "UncheckedMoveCheckers" (Proxy @PieceMove) id)
+applyChessOpt "StrategoV" = do
+    spliceRuleS "SendDrawTileImage" "SendDrawTileImageStratego" stratego
+    overwriteRuleS "SendBoard" serveBoardTiles
+applyChessOpt "StrategoC" = do
+    spliceRuleS "Capture" "StrategoCapture" strategoCapturesAA
+applyChessOpt opt = trace ("Unrecognized option: " ++ opt) $ return ()
 
-chessWithOpts :: [ChessOpts] -> ChessBuilder -> ChessBuilder
-chessWithOpts []           _ = id
-chessWithOpts (opt : opts) self = chessWithOpts opts self . applyChessOpt opt self
-
-type ChessBuilder = Game ChessState -> Game ChessState
-
+chessWithOpts :: [ChessOpts] -> Build ChessGame
+chessWithOpts []           = chessBuilder
+chessWithOpts (opt : opts) = do
+    chessWithOpts opts
+    applyChessOpt opt
 
 chess :: Game ChessState
-chess = fix chess'
+chess = build chessBuilder
 
 
 secondUs :: Integer
@@ -202,15 +235,13 @@ chessApp refRefConn refRefGame serverThreadId pending = handle (throwTo serverTh
         msg  <- MaybeT $ catch (timeout (30 * secondUs) $ receiveDataMessage conn) $ \ (_ :: ConnectionException) -> return Nothing
         (room, ident, colour, opts, maybeFEN) <- hoistMaybe $ decode (fromDataMessage msg) >>= fromRegister
 
-        --liftIO $ print opts
-        let ruleset = chessWithOpts opts ruleset . chess'
-        --liftIO $ print $ fst $ fix $ ruleset
-
+        let ruleset = build $ chessWithOpts opts
+        
         let initialState = case maybeFEN >>= rightToMaybe . parseFEN of
-                Nothing -> chessInitial 
+                Nothing -> chessInitial
                 Just x  -> chessInitial { _board = x }
 
-        refGame <- liftIO $ withTMVarIO refRefGame $ setdefaultM room $ newTMVarIO (initialState, fix ruleset)
+        refGame <- liftIO $ withTMVarIO refRefGame $ setdefaultM room $ newTMVarIO (initialState, ruleset)
         refConn <- liftIO $ withTMVarIO refRefConn $ \ connRefM -> do
             case M.lookup room connRefM of
                 Nothing     -> do

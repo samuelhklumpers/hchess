@@ -6,7 +6,7 @@ module Chess.Game ( module Chess.Game ) where
 
 import qualified Data.Map as M
 
-import Control.Monad.Trans.State.Lazy ( StateT(runStateT) , get, execStateT, put )
+import Control.Monad.Trans.State.Lazy ( StateT(runStateT) , get, execStateT, put, state, State, modify )
 import Control.Monad.Trans.Writer.Lazy ( tell, Writer, runWriter )
 import Control.Monad.Trans.Class ( MonadTrans(..) )
 import Control.Monad (forM_)
