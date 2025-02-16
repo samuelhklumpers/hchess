@@ -1,0 +1,5 @@
+{  
+    "http_port": 8080,
+    "game_port": 58846,
+    "data_dir": "data"
+}

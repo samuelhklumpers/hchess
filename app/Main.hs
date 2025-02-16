@@ -42,7 +42,7 @@ main = do
     maybeCfg <- findConfig path
 
     case maybeCfg of 
-        Nothing  -> return ()
+        Nothing  -> error "Couldn't find chess_server.json"
         Just cfg -> do
             let settings = defaultFileServerSettings (data_dir cfg)
             _ <- forkIO $ W.run (http_port cfg) (staticApp $ settings { ssMaxAge = NoCache })
