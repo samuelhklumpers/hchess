@@ -45,6 +45,9 @@ library:
   - stm
   - websockets
   - unbounded-delays
+  - random
+  - pipes
+  - bytestring
 
 
 executables:

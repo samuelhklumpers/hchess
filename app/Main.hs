@@ -2,7 +2,7 @@
 
 module Main (main) where
 
-import Chess (chessServer)
+import MenuServer (menuServer)
 
 import Network.Wai.Handler.Warp as W
 import Network.Wai.Application.Static
@@ -46,4 +46,4 @@ main = do
         Just cfg -> do
             let settings = defaultFileServerSettings (data_dir cfg)
             _ <- forkIO $ W.run (http_port cfg) (staticApp $ settings { ssMaxAge = NoCache })
-            chessServer (game_port cfg)
+            menuServer (game_port cfg)

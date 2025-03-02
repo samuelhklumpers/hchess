@@ -6,10 +6,10 @@ module Chess.Game ( module Chess.Game ) where
 
 import qualified Data.Map as M
 
-import Control.Monad.Trans.State.Lazy ( StateT(runStateT) , get, execStateT, put, state, State, modify )
-import Control.Monad.Trans.Writer.Lazy ( tell, Writer, runWriter )
+import Control.Monad.Trans.State.Lazy ( StateT(runStateT) , get, execStateT, put )
+import Control.Monad.Trans.Writer.Lazy ( tell, Writer, runWriter, WriterT (runWriterT) )
 import Control.Monad.Trans.Class ( MonadTrans(..) )
-import Control.Monad (forM_)
+import Control.Monad (forM_, when)
 import Data.Dynamic (Dynamic (..), Typeable, toDyn)
 import Type.Reflection (SomeTypeRep (..), type (:~~:) (..), eqTypeRep, typeOf, pattern TypeRep, TypeRep)
 import Control.Monad.Trans.Reader (ReaderT, ask, runReaderT)
@@ -18,13 +18,16 @@ import Data.Function ((&))
 import Control.Lens ((?~), at, (<>~), (^.))
 import Data.Foldable (foldrM)
 import GHC.Stack (HasCallStack, callStack, prettyCallStack)
-import Debug.Trace (trace)
+import Debug.Trace (trace, traceIO)
+import Pipes
+import qualified Pipes.Prelude as P
+import GHC.IO (unsafePerformIO)
 
 
 -- * Events, Rules, and Games
 
 data Action = Event String Dynamic | Effect (IO ())
-type Consequence s = StateT s (ReaderT Events (Writer [Action]))
+type Consequence s = StateT s (ReaderT Events (WriterT [Action] IO))
 type Rule s a = a -> Consequence s ()
 
 argType :: Typeable a => Rule s a -> TypeRep a
@@ -118,13 +121,40 @@ runGame g@(events, rules) acts = do
                         return ()
                     Just HRefl -> do
                         s_ <- get
-                        let ((_ , s_') , acts') = runWriter $ flip runReaderT events $ flip runStateT s_ $ rule a
+                        ((_ , s_') , acts') <- lift $ runWriterT $ flip runReaderT events $ flip runStateT s_ $ rule a
                         put s_'
                         runGame g acts'
         Effect ef -> liftIO ef
 
 runGame' :: Game s -> Runner' s
 runGame' g s acts = execStateT (runGame g acts) s
+
+
+logGame :: Game s -> Action -> Producer Action (StateT s IO) ()
+logGame _ (Effect ef) = liftIO ef
+logGame g@(events, rules) act@(Event e (Dynamic ta a)) = do
+    let relevantRules = M.findWithDefault [] e rules
+
+    when (null relevantRules) $ do
+        liftIO $ traceIO $ "Uncaught event: " ++ e
+
+    forM_ relevantRules $ \ (SomeRule @tr rule) -> do
+        yield act
+        case eqTypeRep ta (TypeRep @tr) of
+            Nothing -> error $ "Actual event type " ++ show ta ++ " of " ++ e ++ " does not match expected type " ++ show (TypeRep @tr) ++ " while running"
+            Just HRefl -> do
+                s_ <- lift get
+                ((_ , s_') , acts') <- liftIO $ runWriterT $ flip runReaderT events $ flip runStateT s_ $ rule a
+                
+                lift $ put s_'
+
+                forM_ acts' $ \ subact -> do
+                    logGame g subact
+                
+                return undefined -- don't worry the variable can't escape
+
+logGame' :: Game s -> s -> [Action] -> IO ([Action], s)
+logGame' g s acts = flip runStateT s $ P.toListM $ forM_ acts (logGame g)
 
 type Simulator s = [Action] -> s -> s
 
@@ -134,14 +164,16 @@ simGameUntil p g@(events, rules) (act : acts) s
     | p act = Left (s , act)
     | otherwise = case act of
         Event e (Dynamic ta a) -> do
-            s' <- foldrM go s (M.findWithDefault [] e rules)
+            let relevantRules = M.findWithDefault [] e rules
+
+            s' <- foldrM go s relevantRules
             simGameUntil p g acts s'
             where
             go (SomeRule @tr rule) s' = case eqTypeRep ta (TypeRep @tr) of
                 Nothing -> do
                     error $ "Actual event type " ++ show ta ++ " of " ++ e ++ " does not match expected type " ++ show (TypeRep @tr)
-                Just HRefl -> do
-                    let ((_ , s'') , acts') = runWriter $ flip runReaderT events $ flip runStateT s' $ rule a
+                Just HRefl -> do   -- TODO       ooops
+                    let ((_ , s'') , acts') = unsafePerformIO $ runWriterT $ flip runReaderT events $ flip runStateT s' $ rule a
                     simGameUntil p g acts' s''
         Effect _ -> simGameUntil p g acts s
 

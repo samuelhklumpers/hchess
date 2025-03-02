@@ -26,10 +26,14 @@ source-repository head
 library
   exposed-modules:
       Chess
+      Chess.CatanStruct
       Chess.Game
       Chess.Internal
       Chess.Rules
       Chess.Structure
+      MenuServer
+      ModelClient
+      ServerTypes
   other-modules:
       Paths_hchess
   autogen-modules:
@@ -41,9 +45,12 @@ library
       aeson
     , base >=4.7 && <5
     , bimap
+    , bytestring
     , containers
     , lens
     , parsec
+    , pipes
+    , random
     , stm
     , transformers
     , unbounded-delays
