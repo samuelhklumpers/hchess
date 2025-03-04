@@ -25,6 +25,7 @@ import GHC.Generics (Generic)
 import ServerTypes
 import Control.Concurrent.STM
 import Network.WebSockets (Connection, sendBinaryData)
+import GHC.Stack (HasCallStack)
 
 
 unimplemented :: a
@@ -272,7 +273,7 @@ userDisconnect :: Rule Catan User
 userDisconnect u = do
     liftIO $ putStrLn $ "Disconnected: " ++ userName u
 
-sendRule :: Rule Catan ([User], CatanResp)
+sendRule :: HasCallStack => Rule Catan ([User], CatanResp)
 sendRule (users, resp) = do
     mtConns <- connections <$> use catanConns
 

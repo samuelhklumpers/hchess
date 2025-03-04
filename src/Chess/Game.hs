@@ -129,8 +129,7 @@ runGame g@(events, rules) acts = do
 runGame' :: Game s -> Runner' s
 runGame' g s acts = execStateT (runGame g acts) s
 
-
-logGame :: Game s -> Action -> Producer Action (StateT s IO) ()
+logGame :: HasCallStack => Game s -> Action -> Producer Action (StateT s IO) ()
 logGame _ (Effect ef) = liftIO ef
 logGame g@(events, rules) act@(Event e (Dynamic ta a)) = do
     let relevantRules = M.findWithDefault [] e rules
@@ -153,7 +152,7 @@ logGame g@(events, rules) act@(Event e (Dynamic ta a)) = do
                 
                 return undefined -- don't worry the variable can't escape
 
-logGame' :: Game s -> s -> [Action] -> IO ([Action], s)
+logGame' :: HasCallStack => Game s -> s -> [Action] -> IO ([Action], s)
 logGame' g s acts = flip runStateT s $ P.toListM $ forM_ acts (logGame g)
 
 type Simulator s = [Action] -> s -> s

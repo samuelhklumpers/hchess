@@ -38,6 +38,7 @@ import Chess.Game
 import Chess.Internal
 import Chess.CatanStruct
 import ServerTypes
+import Control.Exception.Base (IOException)
 
 menuServer :: Int -> IO ()
 menuServer port = do
@@ -105,11 +106,14 @@ menuApp tConns tGames thread req = handle (throwTo thread :: SomeException -> IO
             void $ runMaybeT $ forever $ do
                 msg :: ByteString <- MaybeT $ do
                     let rcv = timeout (10 * 60 * secondUs) $ receiveDataMessage myConn
-                    fmap (fmap fromDataMessage) $ catch rcv $ \ (_ :: ConnectionException) -> return Nothing
+                    fmap (fmap fromDataMessage) $ catch rcv $ \ (_ :: SomeException) -> return Nothing
 
                 liftIO $ print msg
 
-                liftIO $ withTMVarIO_ tGame $ pushEvent $ Message me msg
+                MaybeT $ catch  (do
+                        withTMVarIO_ tGame $ pushEvent $ Message me msg
+                        return $ Just ()) $
+                    \ (_ :: SomeException) -> return Nothing -- sunglasses
 
 catanDecode :: ServerEvent -> Maybe Action
 catanDecode (ServerStarted r) = Just $ mkEvent "ServerStarted" r

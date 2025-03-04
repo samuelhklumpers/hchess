@@ -9,13 +9,15 @@ import ServerTypes
 import Chess.CatanStruct
 
 client :: IO ()
-client = runClient "192.168.178.56" 58846 "" $ \ conn -> do
-    sendBinaryData conn $ encode (Room "Room3", User "Jon")
+client = runClient "localhost" 58846 "" $ \ conn -> do
+    sendBinaryData conn $ encode (Room "Room1", User "Jon")
     print =<< receiveDataMessage conn -- "mode?"
     sendBinaryData conn $ encode ModeCatan
     print =<< receiveDataMessage conn -- "Welcome Jon"
     sendBinaryData conn $ encode (BuildSettleMsg (VertIx (TileIx 0 0) False) BSettlement)
     sendBinaryData conn $ encode (BuildRoadMsg (LineIx (TileIx 0 0) Three1))
+    print =<< receiveDataMessage conn -- ""
+    _ <- error ""
     print =<< receiveDataMessage conn -- ""
     print =<< receiveDataMessage conn -- ""
     print =<< receiveDataMessage conn -- ""
