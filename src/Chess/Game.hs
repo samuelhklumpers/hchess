@@ -7,13 +7,11 @@ module Chess.Game ( module Chess.Game ) where
 import qualified Data.Map as M
 
 import Control.Monad.Trans.State.Lazy ( StateT(runStateT) , get, execStateT, put )
-import Control.Monad.Trans.Writer.Lazy ( tell, Writer, runWriter, WriterT (runWriterT) )
-import Control.Monad.Trans.Class ( MonadTrans(..) )
+import Control.Monad.Trans.Writer.Lazy ( tell, WriterT (runWriterT) )
 import Control.Monad (forM_, when)
 import Data.Dynamic (Dynamic (..), Typeable, toDyn)
 import Type.Reflection (SomeTypeRep (..), type (:~~:) (..), eqTypeRep, typeOf, pattern TypeRep, TypeRep)
 import Control.Monad.Trans.Reader (ReaderT, ask, runReaderT)
-import Control.Monad.IO.Class (liftIO)
 import Data.Function ((&))
 import Control.Lens ((?~), at, (<>~), (^.))
 import Data.Foldable (foldrM)

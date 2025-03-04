@@ -14,7 +14,7 @@ import Chess.Internal ( whenJust, withTMVarIO_ )
 
 import GHC.Exts ()
 import GHC.IO (unsafePerformIO)
-import Data.Maybe (mapMaybe, fromJust, isNothing)
+import Data.Maybe (mapMaybe, fromJust, isNothing, fromMaybe)
 import Control.Monad (when, replicateM, unless, forM_, guard)
 import Control.Monad.IO.Class
 import Control.Applicative ((<|>))
@@ -44,6 +44,10 @@ instance FromJSON Phase where
 isInitial :: Phase -> Bool
 isInitial (Initial _) = True
 isInitial _ = False
+
+phaseIsNormal :: Phase -> Bool
+phaseIsNormal Normal = True
+phaseIsNormal _ = False
 
 data CatanTurn = CatanTurn { _turnPlayer :: Player, _turnPhase :: Phase } deriving (Eq, Ord, Generic)
 makeLenses ''CatanTurn
@@ -111,7 +115,7 @@ data Catan = Catan {
     _catanPlayers :: M.Map User Player,
     _catanMaxPlayers :: Int,
     _catanInventories :: M.Map Player Inventory,
-    _catanTiles :: M.Map TileIx (),
+    _catanTiles :: M.Map TileIx (Resource, Int),
     _catanRoads :: M.Map LineIx Player,
     _catanVertx :: M.Map VertIx (Player, Building),
     _catanConns :: Connections
@@ -140,6 +144,29 @@ vertLineNeighs v = [] -- TODO
 
 vertVertNeighs :: VertIx -> [VertIx]
 vertVertNeighs v = [] -- TODO
+
+data CatanMsg = BuildSettleMsg VertIx Building
+    | BuildRoadMsg LineIx
+    deriving (Eq, Ord, Show, Generic)
+
+instance ToJSON CatanMsg where
+instance FromJSON CatanMsg where
+
+data Tile = TileDesert | TileResource Resource deriving (Eq, Ord, Show, Generic)
+
+instance ToJSON Tile where
+instance FromJSON Tile where
+
+data CatanResp = RespWelcome String
+    | RespTile TileIx Tile
+    | RespVert VertIx Player (Maybe Building)
+    | RespInventory Player Inventory
+    | RespRoad LineIx (Maybe Player)
+    | RespNextTurn CatanTurn
+    deriving (Eq, Ord, Show, Generic)
+
+instance ToJSON CatanResp where
+instance FromJSON CatanResp where
 
 {-
 vertTileNeighs :: VertIx -> [TileIx]
@@ -203,15 +230,21 @@ evs = [
     mkEvent "UserBuildRoad" (User "Freek", LineIx (TileIx 0 0) Three1),
     mkEvent "UserBuildSettlement" (User "Freek", VertIx (TileIx 0 0) False, BSettlement),
     mkEvent "UserBuildRoad" (User "Freek", LineIx (TileIx 0 0) Three1),
+    mkEvent "UserBuildSettlement" (User "Lou", VertIx (TileIx 0 0) False, BSettlement),
+    mkEvent "UserBuildRoad" (User "Lou", LineIx (TileIx 0 0) Three1),
+    mkEvent "UserBuildSettlement" (User "Shoira", VertIx (TileIx 0 0) False, BSettlement),
+    mkEvent "UserBuildRoad" (User "Shoira", LineIx (TileIx 0 0) Three1),
+    mkEvent "UserBuildSettlement" (User "Ping", VertIx (TileIx 0 0) False, BSettlement),
+    mkEvent "UserBuildRoad" (User "Ping", LineIx (TileIx 0 0) Three1),
     mkEvent "Warn me" ()
     ]
 
 {-
 >>> tmp1 evs
-["UserConnect","Start","InitialStart","UserConnect","UserConnect","UserConnect","UserBuildSettlement"]
+["UserConnect","Start","InitialStart","Send","UserConnect","Send","UserConnect","Send","UserConnect","Send","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","UpdateInventory","Send","UserBuildRoad","BuildRoad","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildRoad","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildRoad","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildRoad","BuildRoad","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildSettlement","UserBuildRoad"]
 
 >>> tmp2 evs
-Catan {_catanStarted = True, _catanTurn = Normal 0, _catanPlayers = fromList [(User "Freek",Player {player = 3}),(User "Lou",Player {player = 2}),(User "Ping",Player {player = 0}),(User "Shoira",Player {player = 1})], _catanMaxPlayers = 4, _catanInventories = fromList [(Player {player = 0},fromList [(Road,2),(Settlement,2)]),(Player {player = 1},fromList [(Road,2),(Settlement,2)]),(Player {player = 2},fromList [(Road,2),(Settlement,2)]),(Player {player = 3},fromList [(Road,2),(Settlement,2)])], _catanTiles = fromList [], _catanRoads = fromList [], _catanVertx = fromList []}
+Catan {_catanStarted = True, _catanTurn = Initial True 2, _catanTurnLog = [ActBuildRoad,ActBuild,ActBuild,ActBuild,ActBuildRoad,ActBuild], _catanPlayers = fromList [(User {userName = "Freek"},Player {player = 3}),(User {userName = "Lou"},Player {player = 2}),(User {userName = "Ping"},Player {player = 0}),(User {userName = "Shoira"},Player {player = 1})], _catanMaxPlayers = 4, _catanInventories = fromList [(Player {player = 0},fromList [(Road,2),(Settlement,1)]),(Player {player = 1},fromList [(Road,2),(Settlement,1)]),(Player {player = 2},fromList [(Road,2),(Settlement,1)]),(Player {player = 3},fromList [(Road,2),(Settlement,1)])], _catanTiles = fromList [], _catanRoads = fromList [(LineIx (TileIx 0 0) Three1,Player {player = 3})], _catanVertx = fromList [(VertIx (TileIx 0 0) False,(Player {player = 3},BSettlement))], _catanConns = Connections ...}
 -}
 
 
@@ -220,13 +253,6 @@ catan = logGame' catanGame
 
 catanFinal :: [Action] -> ([Action], Catan)
 catanFinal as = unsafePerformIO $ catan catan0 as
-
-data CatanMsg = BuildSettleMsg VertIx Building
-    | BuildRoadMsg LineIx
-    deriving (Eq, Ord, Show, Generic)
-
-instance ToJSON CatanMsg where
-instance FromJSON CatanMsg where
 
 startRule :: Rule Catan ()
 startRule () = do
@@ -239,22 +265,6 @@ serverStarted :: Rule Catan (TMVar (M.Map User Connection))
 serverStarted r = do
     catanConns .= Connections (Just r)
     liftIO $ putStrLn "Catan server started!"
-
-data Tile = TileDesert | TileResource Resource deriving (Eq, Ord, Show, Generic)
-
-instance ToJSON Tile where
-instance FromJSON Tile where
-
-data CatanResp = RespWelcome String
-    | RespTile TileIx Tile
-    | RespVert VertIx Player (Maybe Building)
-    | RespInventory Player Inventory
-    | RespRoad LineIx (Maybe Player)
-    | RespNextTurn CatanTurn
-    deriving (Eq, Ord, Show, Generic)
-
-instance ToJSON CatanResp where
-instance FromJSON CatanResp where
 
 userConnect :: Rule Catan User
 userConnect u = do
@@ -273,7 +283,7 @@ userDisconnect :: Rule Catan User
 userDisconnect u = do
     liftIO $ putStrLn $ "Disconnected: " ++ userName u
 
-sendRule :: HasCallStack => Rule Catan ([User], CatanResp)
+sendRule :: Rule Catan ([User], CatanResp)
 sendRule (users, resp) = do
     mtConns <- connections <$> use catanConns
 
@@ -293,8 +303,8 @@ initialStart () = do
 
 endTurn :: Rule Catan Player
 endTurn p = do
-    p' <- use $ catanTurn . turnPlayer
-    when (p == p') $ do
+    CatanTurn p' phase <- use catanTurn
+    when (p == p' && phaseIsNormal phase) $ do
         cause "NextTurn" ()
 
 buildCheck :: [[(Item, Int)]] -> Inventory -> Maybe Inventory
@@ -308,6 +318,9 @@ buildCost :: Building -> [[(Item, Int)]]
 buildCost BSettlement = [[(Settlement, 1)], first Resource <$> [(Brick, 1), (Grain, 1), (Sheep, 1), (Wood, 1)]]
 buildCost BCity = [[(Resource Ore, 1000)]]
 
+roadCost :: [[(Item, Int)]]
+roadCost = [[(Road, 1)], first Resource <$> [(Brick, 1), (Wood, 1)]]
+
 buildValid :: Player -> VertIx -> Consequence Catan Bool
 buildValid p v = do
     roads <- use catanRoads
@@ -318,6 +331,16 @@ buildValid p v = do
     let distOk = null $ mapMaybe (houses M.!?) (vertVertNeighs v)
 
     return (distOk && (roadOk || isInitial phase))
+
+buildRoadValid :: Player -> LineIx -> Consequence Catan Bool
+buildRoadValid p i = do
+    roads <- use catanRoads
+    houses <- use catanVertx
+
+    let roadOk = p `elem` mapMaybe (roads M.!?) (lineLineNeighs i)
+    let houseOk = p `elem` (fst <$> mapMaybe (houses M.!?) (lineVertNeighs i))
+
+    return (roadOk || houseOk)
 
 userBuildSettlement :: Rule Catan (User, VertIx, Building)
 userBuildSettlement (u, v, b) = do
@@ -335,7 +358,6 @@ userBuildSettlement (u, v, b) = do
                 when ok $ do
                     cause "BuildSettlement" (p, v, b)
                     cause "UpdateInventory" (p, items')
-                    -- TODO bind CheckVictory
 
 buildSettlement :: Rule Catan (Player, VertIx, Building)
 buildSettlement (p, v, b) = do
@@ -346,6 +368,7 @@ buildSettlement (p, v, b) = do
     cause "Send" (users, RespVert v p (Just b))
     cause "CheckInitialEnd" ()
     cause "CheckVictory" ()
+    -- TODO bind CheckVictory
 
 checkInitialEnd :: Rule Catan ()
 checkInitialEnd () = do
@@ -353,7 +376,7 @@ checkInitialEnd () = do
 
     when (isInitial phase) $ do
         turnLog <- use catanTurnLog
-        
+
         when (all (`elem` turnLog) [ActBuildRoad, ActBuild]) $ do
             cause "NextTurn" ()
 
@@ -372,8 +395,8 @@ userBuildRoad (u, l) = do
         p' <- use $ catanTurn . turnPlayer
         when (p == p') $ do
             items <- fromJust <$> use (catanInventories . at p)
-            whenJust (Just items) {-(buildCheck (buildCost b) items) TODO -} $ \ items' -> do
-                let ok = True --buildValid p v TODO
+            whenJust (buildCheck roadCost items) $ \ items' -> do
+                ok <- buildRoadValid p l
 
                 when ok $ do
                     cause "BuildRoad" (p, l)
@@ -389,12 +412,10 @@ buildRoad (p, l) = do
     cause "CheckInitialEnd" ()
     cause "CheckVictory" ()
 
-sendVictory :: Rule Catan () -- TODO
-sendVictory () = undefined
-
-networkRule :: Rule Catan () -- TODO
-networkRule () = do
-    undefined
+checkVictory :: Rule Catan ()
+checkVictory () = do
+    -- TODO
+    return ()
 
 nextTurn' :: Int -> CatanTurn -> CatanTurn
 nextTurn' n (CatanTurn (Player p) phase) = case phase of
@@ -413,17 +434,36 @@ nextTurn () = do
     turn' <- nextTurn' numPlayers <$> use catanTurn
 
     catanTurn .= turn'
-    
-    users <- M.keys <$> use catanPlayers
-    cause "Send" $ (users, RespNextTurn turn')
 
+    users <- M.keys <$> use catanPlayers
+    cause "Send" (users, RespNextTurn turn')
+
+-- TODO, technically, you should:
+-- * add a new Phase: Lock
+-- * prevent the user from spending resources
+--   right before they are supposed to lose them
+-- But this is not (yet) a problem, 
+-- because the state is in a TMVar,
+-- so you can't actually get in while the interpreter
+-- is running.
 startNormalTurn :: Rule Catan ()
 startNormalTurn _ = do
     diceRoll <- liftIO $ rollxDy 2 6
 
-    -- TODO distribute resources
+    tiles <- M.toList <$> use catanTiles
+    -- TODO optimize
+    forM_ tiles $ \ (i, (r, n)) ->
+        when (diceRoll == n) $ do
+            forM_ (tileVertNeighs i) $ \ vi -> do
+                v <- use $ catanVertx . at vi
+                whenJust v $ \ (p, b) ->
+                    catanInventories
+                        . at p . non mempty
+                        . at (Resource r) . non 0 %= (+ buildingPower b)
 
-    return ()
+buildingPower :: Building -> Int
+buildingPower BSettlement = 1
+buildingPower BCity = 2
 
 rollDy :: Int -> IO Int
 rollDy y = getStdRandom (randomR (1, y))
