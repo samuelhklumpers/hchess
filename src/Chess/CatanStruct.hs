@@ -238,25 +238,11 @@ data CatanResp = RespWelcome String
     | RespInventory Player Inventory
     | RespRoad LineIx (Maybe Player)
     | RespNextTurn CatanTurn
+    | RespUserInvalidInput
     deriving (Eq, Ord, Show, Generic)
 
 instance ToJSON CatanResp where
 instance FromJSON CatanResp where
-
-{-
-vertTileNeighs :: VertIx -> [TileIx]
-vertTileNeighs (VertIx ix@(Tile x y) b) = if b
-    then [ix, Tile x (y + 1), Tile (x + 1) (y + 1)]
-    else [ix, Tile (x - 1) y, Tile x (y + 1)]
-
-lineVertNeighs :: LineIx -> [VertIx]
-lineVertNeighs (LineIx ix@(Tile x y) t) = case t of
-    Three1 -> [VertIx (TileIx (x - 1) (y - 1)) True, VertIx ix False]
-    Three2 -> [VertIx ix False, VertIx ix True]
-    Three3 -> [VertIx ix True, VertIx (TileIx (x + 1) y) False]
--}
-
-
 
 catan0 :: Catan
 catan0 = Catan False (CatanTurn (Player 0) (Initial False)) [] mempty 4 mempty mempty mempty mempty (Connections Nothing)
@@ -278,8 +264,6 @@ catanGame = mempty
     & registerRule "EndTurn" endTurn
     & registerRule "NextTurn" nextTurn
 
-    -- & registerRule "" unimplemented
-
 tmp1 :: [Action] -> [String]
 tmp1 as = mapMaybe go $ fst $ catanFinal as
     where
@@ -295,8 +279,10 @@ evs = [
     mkEvent "UserConnect" (User "Shoira"),
     mkEvent "UserConnect" (User "Lou"),
     mkEvent "UserConnect" (User "Freek"),
+    mkEvent "UserBuildRoad" (User "Ping", LineIx (TileIx 0 0) Three1),
     mkEvent "UserBuildSettlement" (User "Ping", VertIx (TileIx 0 0) False, BSettlement),
     mkEvent "UserBuildRoad" (User "Ping", LineIx (TileIx 0 0) Three1),
+    mkEvent "UserBuildSettlement" (User "Shoira", VertIx (TileIx 0 0) False, BSettlement),
     mkEvent "UserBuildSettlement" (User "Shoira", VertIx (TileIx 0 0) False, BSettlement),
     mkEvent "UserBuildRoad" (User "Shoira", LineIx (TileIx 0 0) Three1),
     mkEvent "UserBuildSettlement" (User "Lou", VertIx (TileIx 0 0) False, BSettlement),
@@ -316,10 +302,10 @@ evs = [
 
 {-
 >>> tmp1 evs
-["UserConnect","Start","InitialStart","Send","UserConnect","Send","UserConnect","Send","UserConnect","Send","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","UpdateInventory","Send","UserBuildRoad","BuildRoad","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildRoad","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildRoad","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildRoad","BuildRoad","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildSettlement","UserBuildRoad"]
+["UserConnect","Start","InitialStart","Send","UserConnect","Send","UserConnect","Send","UserConnect","Send","UserBuildRoad","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","UpdateInventory","Send","UserBuildRoad","BuildRoad","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","UpdateInventory","Send","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","UpdateInventory","Send","UserBuildRoad","BuildRoad","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","UpdateInventory","Send","UserBuildRoad","BuildRoad","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","UpdateInventory","Send","UserBuildRoad","BuildRoad","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","UpdateInventory","Send","UserBuildRoad","BuildRoad","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","UpdateInventory","Send","UserBuildRoad","BuildRoad","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildSettlement","UserBuildRoad","UserBuildSettlement","UserBuildRoad"]
 
 >>> tmp2 evs
-Catan {_catanStarted = True, _catanTurn = Initial True 2, _catanTurnLog = [ActBuildRoad,ActBuild,ActBuild,ActBuild,ActBuildRoad,ActBuild], _catanPlayers = fromList [(User {userName = "Freek"},Player {player = 3}),(User {userName = "Lou"},Player {player = 2}),(User {userName = "Ping"},Player {player = 0}),(User {userName = "Shoira"},Player {player = 1})], _catanMaxPlayers = 4, _catanInventories = fromList [(Player {player = 0},fromList [(Road,2),(Settlement,1)]),(Player {player = 1},fromList [(Road,2),(Settlement,1)]),(Player {player = 2},fromList [(Road,2),(Settlement,1)]),(Player {player = 3},fromList [(Road,2),(Settlement,1)])], _catanTiles = fromList [], _catanRoads = fromList [(LineIx (TileIx 0 0) Three1,Player {player = 3})], _catanVertx = fromList [(VertIx (TileIx 0 0) False,(Player {player = 3},BSettlement))], _catanConns = Connections ...}
+Catan {_catanStarted = True, _catanTurn = Initial True 1, _catanTurnLog = [], _catanPlayers = fromList [(User {userName = "Freek"},Player {player = 3}),(User {userName = "Lou"},Player {player = 2}),(User {userName = "Ping"},Player {player = 0}),(User {userName = "Shoira"},Player {player = 1})], _catanMaxPlayers = 4, _catanInventories = fromList [(Player {player = 0},fromList [(Road,1),(Settlement,1)]),(Player {player = 1},fromList [(Road,1),(Settlement,0)]),(Player {player = 2},fromList [(Road,0),(Settlement,0)]),(Player {player = 3},fromList [(Road,0),(Settlement,0)])], _catanTiles = fromList [], _catanRoads = fromList [(LineIx (TileIx 0 0) Three1,Player {player = 2})], _catanVertx = fromList [(VertIx (TileIx 0 0) False,(Player {player = 2},BSettlement))], _catanConns = Connections ...}
 -}
 
 
@@ -428,11 +414,16 @@ userBuildSettlement (u, v, b) = do
             whenJust (buildCheck (buildCost b) items) $ \ items' -> do
                 ok <- buildValid p v
 
+                phase <- use $ catanTurn . turnPhase
+                turnLog <- use catanTurnLog
                 -- TODO if (phase == Initial True) give resources
+                let logOk = not (isInitial phase) || ActBuild `notElem` turnLog
 
-                when ok $ do
+                if ok && logOk then do
                     cause "BuildSettlement" (p, v, b)
                     cause "UpdateInventory" (p, items')
+                else do
+                    cause "Send" (u, RespUserInvalidInput)
 
 buildSettlement :: Rule Catan (Player, VertIx, Building)
 buildSettlement (p, v, b) = do
@@ -453,6 +444,7 @@ checkInitialEnd () = do
         turnLog <- use catanTurnLog
 
         when (all (`elem` turnLog) [ActBuildRoad, ActBuild]) $ do
+            catanTurnLog .= mempty
             cause "NextTurn" ()
 
 updateInventory :: Rule Catan (Player, Inventory)
@@ -473,9 +465,16 @@ userBuildRoad (u, l) = do
             whenJust (buildCheck roadCost items) $ \ items' -> do
                 ok <- buildRoadValid p l
 
-                when ok $ do
+                phase <- use $ catanTurn . turnPhase
+                turnLog <- use catanTurnLog
+
+                let logOk = not (isInitial phase) || ActBuildRoad `notElem` turnLog
+
+                if ok && logOk then do
                     cause "BuildRoad" (p, l)
                     cause "UpdateInventory" (p, items')
+                else
+                    cause "Send" (u, RespUserInvalidInput)
 
 buildRoad :: Rule Catan (Player, LineIx)
 buildRoad (p, l) = do
