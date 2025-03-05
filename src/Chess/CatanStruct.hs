@@ -14,8 +14,8 @@ import Chess.Internal ( whenJust, withTMVarIO_ )
 
 import GHC.Exts ()
 import GHC.IO (unsafePerformIO)
-import Data.Maybe (mapMaybe, fromJust, isNothing, fromMaybe)
-import Control.Monad (when, replicateM, unless, forM_, guard)
+import Data.Maybe (mapMaybe, fromJust)
+import Control.Monad (when, replicateM, unless, forM_)
 import Control.Monad.IO.Class
 import Control.Applicative ((<|>))
 import Data.Bifunctor
@@ -25,7 +25,6 @@ import GHC.Generics (Generic)
 import ServerTypes
 import Control.Concurrent.STM
 import Network.WebSockets (Connection, sendBinaryData)
-import GHC.Stack (HasCallStack)
 
 
 unimplemented :: a
@@ -123,27 +122,103 @@ data Catan = Catan {
     deriving (Show, Generic)
 makeLenses ''Catan
 
-{-
-       .--.  1,0
-      /    \
-  .--.  0,0 .--.           
- /    x    z    \        
-. -1,0 ay-b  1,1 .            
- \    /    \    /       
-  .--. 0,1  .--.      
-      \    /
-       .--.
-            
--}
-
-tileTileNeighs :: TileIx -> [TileIx]
-tileTileNeighs (TileIx x y) = [TileIx (x + dx) (y + dy) | dx <- [-1..1], dy <- [-1..1], dx /= 0 || dy /= 0]
-
-vertLineNeighs :: VertIx -> [LineIx]
-vertLineNeighs v = [] -- TODO
 
 vertVertNeighs :: VertIx -> [VertIx]
-vertVertNeighs v = [] -- TODO
+vertVertNeighs (VertIx (TileIx x y) False) = [
+    VertIx (TileIx x (y - 1)) True,
+    VertIx (TileIx (x - 1) (y - 1)) True,
+    VertIx (TileIx (x - 1) (y - 2)) True
+    ]
+vertVertNeighs (VertIx (TileIx x y) True) = [
+    VertIx (TileIx x (y + 1)) False,
+    VertIx (TileIx (x + 1) (y + 1)) False,
+    VertIx (TileIx (x + 1) (y + 2)) False
+    ]
+
+lineLineNeighs :: LineIx -> [LineIx]
+lineLineNeighs (LineIx (TileIx x y) Three1) = [
+    LineIx (TileIx x (y - 1)) Three2,
+    LineIx (TileIx (x + 1) y) Three3,
+    LineIx (TileIx x (y - 1)) Three3,
+    LineIx (TileIx (x - 1) (y - 1)) Three2
+    ]
+lineLineNeighs (LineIx (TileIx x y) Three2) = [
+    LineIx (TileIx x (y + 1)) Three1,
+    LineIx (TileIx (x + 1) (y + 1)) Three3,
+    LineIx (TileIx (x + 1) y) Three3,
+    LineIx (TileIx (x + 1) (y + 1)) Three1
+    ]
+lineLineNeighs (LineIx (TileIx x y) Three3) = [
+    LineIx (TileIx (x - 1) y) Three1,
+    LineIx (TileIx (x - 1) (y - 1)) Three2,
+    LineIx (TileIx (x - 1) y) Three2,
+    LineIx (TileIx x (y + 1)) Three1
+    ]
+
+
+
+lineVertNeighs :: LineIx -> [VertIx]
+lineVertNeighs (LineIx (TileIx x y) Three1) = [
+    VertIx (TileIx x y) False,
+    VertIx (TileIx x (y - 1)) True
+    ]
+lineVertNeighs (LineIx (TileIx x y) Three2) = [
+    VertIx (TileIx x y) True,
+    VertIx (TileIx (x + 1) (y + 1)) False
+    ]
+lineVertNeighs (LineIx (TileIx x y) Three3) = [
+    VertIx (TileIx x (y + 1)) False,
+    VertIx (TileIx (x - 1) (y - 1)) True
+    ]
+
+tileVertNeighs :: TileIx -> [VertIx]
+tileVertNeighs (TileIx x y) = [
+    VertIx (TileIx x y) False,
+    VertIx (TileIx x y) True,
+    VertIx (TileIx x (y + 1)) False,
+    VertIx (TileIx (x + 1) (y + 1)) False,
+    VertIx (TileIx (y - 1) (y - 1)) True,
+    VertIx (TileIx x (y - 1)) True
+    ]
+
+tileTileNeighs :: TileIx -> [TileIx]
+tileTileNeighs (TileIx x y) = uncurry TileIx <$> [
+    (x+1,y),(x-1,y),
+    (x+1,y+1),(x-1,y-1),
+    (x,y+1),(x,y-1)
+    ]
+
+{-
+      F     .
+     / a   / \
+    /   \ /   \
+   .     .     .
+   | 0,0 | 1,0 |
+   c     |     |
+   .     .     .
+  / a   b a   /
+ /   \ /   \ /
+.     T     .
+| 0,1 | 1,1 |
+c     c     |
+.     .     .
+ \   b \   b
+  \ /   \ /
+   .     .
+-}
+
+vertLineNeighs :: VertIx -> [LineIx]
+vertLineNeighs (VertIx (TileIx x y) False) = [
+    LineIx (TileIx x y) Three1,
+    LineIx (TileIx (x - 1) (y - 1)) Three2,
+    LineIx (TileIx x (y - 1)) Three3
+    ]
+vertLineNeighs (VertIx (TileIx x y) True) = [
+    LineIx (TileIx x (y + 1)) Three1,
+    LineIx (TileIx x y) Three2,
+    LineIx (TileIx (x + 1) (y + 1)) Three3
+    ]
+
 
 data CatanMsg = BuildSettleMsg VertIx Building
     | BuildRoadMsg LineIx
