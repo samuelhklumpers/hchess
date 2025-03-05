@@ -99,6 +99,7 @@ newtype Connections = Connections { connections :: Maybe (TMVar (M.Map User Conn
 makeLenses ''Connections
 
 instance Show Connections where
+    show (Connections Nothing) = "Disconnected"
     show _ = "Connections ..."
 
 data CatanAct = ActBuildRoad | ActBuild deriving (Eq, Ord, Show, Generic)
@@ -106,6 +107,7 @@ data CatanAct = ActBuildRoad | ActBuild deriving (Eq, Ord, Show, Generic)
 instance ToJSON CatanAct where
 instance FromJSON CatanAct where
 
+data Tile = TileResource Resource Int | TileDesert  deriving (Eq, Ord, Show, Generic)
 
 data Catan = Catan {
     _catanStarted :: Bool,
@@ -114,7 +116,7 @@ data Catan = Catan {
     _catanPlayers :: M.Map User Player,
     _catanMaxPlayers :: Int,
     _catanInventories :: M.Map Player Inventory,
-    _catanTiles :: M.Map TileIx (Resource, Int),
+    _catanTiles :: M.Map TileIx Tile,
     _catanRoads :: M.Map LineIx Player,
     _catanVertx :: M.Map VertIx (Player, Building),
     _catanConns :: Connections
@@ -155,8 +157,6 @@ lineLineNeighs (LineIx (TileIx x y) Three3) = [
     LineIx (TileIx x (y + 1)) Three1
     ]
 
-
-
 lineVertNeighs :: LineIx -> [VertIx]
 lineVertNeighs (LineIx (TileIx x y) Three1) = [
     VertIx (TileIx x y) False,
@@ -186,6 +186,25 @@ tileTileNeighs (TileIx x y) = uncurry TileIx <$> [
     (x+1,y),(x-1,y),
     (x+1,y+1),(x-1,y-1),
     (x,y+1),(x,y-1)
+    ]
+
+lineTileNeighs :: LineIx -> [TileIx]
+lineTileNeighs (LineIx (TileIx x y) Three1) = [
+    TileIx x y, TileIx x (y - 1)
+    ]
+lineTileNeighs (LineIx (TileIx x y) Three2) = [
+    TileIx x y, TileIx (x + 1) (y + 1)
+    ]
+lineTileNeighs (LineIx (TileIx x y) Three3) = [
+    TileIx x y, TileIx (x - 1) y
+    ]
+
+vertTileNeighs :: VertIx -> [TileIx]
+vertTileNeighs (VertIx (TileIx x y) False) = [
+    TileIx x y, TileIx x (y - 1), TileIx (x - 1) (y - 1)
+    ]
+vertTileNeighs (VertIx (TileIx x y) True) = [
+    TileIx x y, TileIx x (y + 1), TileIx (x + 1) (y + 1)
     ]
 
 {-
@@ -226,8 +245,6 @@ data CatanMsg = BuildSettleMsg VertIx Building
 
 instance ToJSON CatanMsg where
 instance FromJSON CatanMsg where
-
-data Tile = TileDesert | TileResource Resource deriving (Eq, Ord, Show, Generic)
 
 instance ToJSON Tile where
 instance FromJSON Tile where
@@ -375,26 +392,29 @@ roadCost = [[(Road, 1)], first Resource <$> [(Brick, 1), (Wood, 1)]]
 
 buildValid :: Player -> VertIx -> Building -> Consequence Catan Bool
 buildValid p v b = do
+    tiles <- use catanTiles
     roads <- use catanRoads
     houses <- use catanVertx
     phase <- use $ catanTurn . turnPhase
 
     let emptyOk = (houses M.!? v) `elem` Nothing : [Just (p, BSettlement) | b == BCity]
+    let boardOk = not $ null $ mapMaybe (tiles M.!?) (vertTileNeighs v)
     let roadOk = Just p `elem` ((roads M.!?) <$> vertLineNeighs v)
     let distOk = null $ mapMaybe (houses M.!?) (vertVertNeighs v)
-
-    return $ emptyOk && distOk && (roadOk || isInitial phase)
+    return $ emptyOk && boardOk && distOk && (roadOk || isInitial phase)
 
 buildRoadValid :: Player -> LineIx -> Consequence Catan Bool
 buildRoadValid p i = do
+    tiles <- use catanTiles
     roads <- use catanRoads
     houses <- use catanVertx
 
     let emptyOk = i `M.notMember` roads
+    let boardOk = not $ null $ mapMaybe (tiles M.!?) (lineTileNeighs i)
     let roadOk = p `elem` mapMaybe (roads M.!?) (lineLineNeighs i)
     let houseOk = p `elem` (fst <$> mapMaybe (houses M.!?) (lineVertNeighs i))
 
-    return $ emptyOk && (roadOk || houseOk)
+    return $ emptyOk && boardOk && (roadOk || houseOk)
 
 userBuildSettlement :: Rule Catan (User, VertIx, Building)
 userBuildSettlement (u, v, b) = do
@@ -519,14 +539,16 @@ startNormalTurn _ = do
 
     tiles <- M.toList <$> use catanTiles
     -- TODO optimize
-    forM_ tiles $ \ (i, (r, n)) ->
-        when (diceRoll == n) $ do
-            forM_ (tileVertNeighs i) $ \ vi -> do
-                v <- use $ catanVertx . at vi
-                whenJust v $ \ (p, b) ->
-                    catanInventories
-                        . at p . non mempty
-                        . at (Resource r) . non 0 %= (+ buildingPower b)
+    forM_ tiles $ \ (i, t) ->
+        case t of
+            TileResource r n -> when (diceRoll == n) $ do
+                forM_ (tileVertNeighs i) $ \ vi -> do
+                    v <- use $ catanVertx . at vi
+                    whenJust v $ \ (p, b) ->
+                        catanInventories
+                            . at p . non mempty
+                            . at (Resource r) . non 0 %= (+ buildingPower b)
+            _ -> return ()
 
 buildingPower :: Building -> Int
 buildingPower BSettlement = 1
