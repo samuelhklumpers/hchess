@@ -282,32 +282,23 @@ evs = [
     mkEvent "UserBuildRoad" (User "Ping", LineIx (TileIx 0 0) Three1),
     mkEvent "UserBuildSettlement" (User "Ping", VertIx (TileIx 0 0) False, BSettlement),
     mkEvent "UserBuildRoad" (User "Ping", LineIx (TileIx 0 0) Three1),
-    mkEvent "UserBuildSettlement" (User "Shoira", VertIx (TileIx 0 0) False, BSettlement),
-    mkEvent "UserBuildSettlement" (User "Shoira", VertIx (TileIx 0 0) False, BSettlement),
-    mkEvent "UserBuildRoad" (User "Shoira", LineIx (TileIx 0 0) Three1),
-    mkEvent "UserBuildSettlement" (User "Lou", VertIx (TileIx 0 0) False, BSettlement),
-    mkEvent "UserBuildRoad" (User "Lou", LineIx (TileIx 0 0) Three1),
-    mkEvent "UserBuildSettlement" (User "Freek", VertIx (TileIx 0 0) False, BSettlement),
-    mkEvent "UserBuildRoad" (User "Freek", LineIx (TileIx 0 0) Three1),
-    mkEvent "UserBuildSettlement" (User "Freek", VertIx (TileIx 0 0) False, BSettlement),
-    mkEvent "UserBuildRoad" (User "Freek", LineIx (TileIx 0 0) Three1),
-    mkEvent "UserBuildSettlement" (User "Lou", VertIx (TileIx 0 0) False, BSettlement),
-    mkEvent "UserBuildRoad" (User "Lou", LineIx (TileIx 0 0) Three1),
-    mkEvent "UserBuildSettlement" (User "Shoira", VertIx (TileIx 0 0) False, BSettlement),
-    mkEvent "UserBuildRoad" (User "Shoira", LineIx (TileIx 0 0) Three1),
-    mkEvent "UserBuildSettlement" (User "Ping", VertIx (TileIx 0 0) False, BSettlement),
-    mkEvent "UserBuildRoad" (User "Ping", LineIx (TileIx 0 0) Three1),
+    mkEvent "UserBuildSettlement" (User "Shoira", VertIx (TileIx 1 0) False, BSettlement),
+    mkEvent "UserBuildSettlement" (User "Shoira", VertIx (TileIx 1 0) False, BSettlement),
+    mkEvent "UserBuildRoad" (User "Shoira", LineIx (TileIx 1 0) Three1),
+    mkEvent "UserBuildSettlement" (User "Lou", VertIx (TileIx 0 1) False, BSettlement),
+    mkEvent "UserBuildRoad" (User "Lou", LineIx (TileIx 0 1) Three1),
+    mkEvent "UserBuildSettlement" (User "Freek", VertIx (TileIx 1 1) False, BSettlement),
+    mkEvent "UserBuildRoad" (User "Freek", LineIx (TileIx 1 1) Three1),
+    mkEvent "UserBuildSettlement" (User "Freek", VertIx (TileIx 2 0) False, BSettlement),
+    mkEvent "UserBuildRoad" (User "Freek", LineIx (TileIx 2 0) Three1),
+    mkEvent "UserBuildSettlement" (User "Lou", VertIx (TileIx 2 1) False, BSettlement),
+    mkEvent "UserBuildRoad" (User "Lou", LineIx (TileIx 2 1) Three1),
+    mkEvent "UserBuildSettlement" (User "Shoira", VertIx (TileIx 3 0) False, BSettlement),
+    mkEvent "UserBuildRoad" (User "Shoira", LineIx (TileIx 3 0) Three1),
+    mkEvent "UserBuildSettlement" (User "Ping", VertIx (TileIx 3 1) False, BSettlement),
+    mkEvent "UserBuildRoad" (User "Ping", LineIx (TileIx 3 1) Three1),
     mkEvent "Warn me" ()
     ]
-
-{-
->>> tmp1 evs
-["UserConnect","Start","InitialStart","Send","UserConnect","Send","UserConnect","Send","UserConnect","Send","UserBuildRoad","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","UpdateInventory","Send","UserBuildRoad","BuildRoad","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","UpdateInventory","Send","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","UpdateInventory","Send","UserBuildRoad","BuildRoad","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","UpdateInventory","Send","UserBuildRoad","BuildRoad","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","UpdateInventory","Send","UserBuildRoad","BuildRoad","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","UpdateInventory","Send","UserBuildRoad","BuildRoad","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildSettlement","BuildSettlement","Send","CheckInitialEnd","UpdateInventory","Send","UserBuildRoad","BuildRoad","Send","CheckInitialEnd","NextTurn","Send","UpdateInventory","Send","UserBuildSettlement","UserBuildRoad","UserBuildSettlement","UserBuildRoad"]
-
->>> tmp2 evs
-Catan {_catanStarted = True, _catanTurn = Initial True 1, _catanTurnLog = [], _catanPlayers = fromList [(User {userName = "Freek"},Player {player = 3}),(User {userName = "Lou"},Player {player = 2}),(User {userName = "Ping"},Player {player = 0}),(User {userName = "Shoira"},Player {player = 1})], _catanMaxPlayers = 4, _catanInventories = fromList [(Player {player = 0},fromList [(Road,1),(Settlement,1)]),(Player {player = 1},fromList [(Road,1),(Settlement,0)]),(Player {player = 2},fromList [(Road,0),(Settlement,0)]),(Player {player = 3},fromList [(Road,0),(Settlement,0)])], _catanTiles = fromList [], _catanRoads = fromList [(LineIx (TileIx 0 0) Three1,Player {player = 2})], _catanVertx = fromList [(VertIx (TileIx 0 0) False,(Player {player = 2},BSettlement))], _catanConns = Connections ...}
--}
-
 
 catan :: Catan -> [Action] -> IO ([Action], Catan)
 catan = logGame' catanGame
@@ -377,31 +368,33 @@ buildCheck costs items = foldr ((<|>) . ok) Nothing costs
 
 buildCost :: Building -> [[(Item, Int)]]
 buildCost BSettlement = [[(Settlement, 1)], first Resource <$> [(Brick, 1), (Grain, 1), (Sheep, 1), (Wood, 1)]]
-buildCost BCity = [[(Resource Ore, 1000)]]
+buildCost BCity = [[(Resource Ore, 3), (Resource Grain, 2)]]
 
 roadCost :: [[(Item, Int)]]
 roadCost = [[(Road, 1)], first Resource <$> [(Brick, 1), (Wood, 1)]]
 
-buildValid :: Player -> VertIx -> Consequence Catan Bool
-buildValid p v = do
+buildValid :: Player -> VertIx -> Building -> Consequence Catan Bool
+buildValid p v b = do
     roads <- use catanRoads
     houses <- use catanVertx
     phase <- use $ catanTurn . turnPhase
 
+    let emptyOk = (houses M.!? v) `elem` Nothing : [Just (p, BSettlement) | b == BCity]
     let roadOk = Just p `elem` ((roads M.!?) <$> vertLineNeighs v)
     let distOk = null $ mapMaybe (houses M.!?) (vertVertNeighs v)
 
-    return (distOk && (roadOk || isInitial phase))
+    return $ emptyOk && distOk && (roadOk || isInitial phase)
 
 buildRoadValid :: Player -> LineIx -> Consequence Catan Bool
 buildRoadValid p i = do
     roads <- use catanRoads
     houses <- use catanVertx
 
+    let emptyOk = i `M.notMember` roads
     let roadOk = p `elem` mapMaybe (roads M.!?) (lineLineNeighs i)
     let houseOk = p `elem` (fst <$> mapMaybe (houses M.!?) (lineVertNeighs i))
 
-    return (roadOk || houseOk)
+    return $ emptyOk && (roadOk || houseOk)
 
 userBuildSettlement :: Rule Catan (User, VertIx, Building)
 userBuildSettlement (u, v, b) = do
@@ -412,7 +405,7 @@ userBuildSettlement (u, v, b) = do
         when (p == p') $ do
             items <- fromJust <$> use (catanInventories . at p)
             whenJust (buildCheck (buildCost b) items) $ \ items' -> do
-                ok <- buildValid p v
+                ok <- buildValid p v b
 
                 phase <- use $ catanTurn . turnPhase
                 turnLog <- use catanTurnLog
@@ -423,7 +416,7 @@ userBuildSettlement (u, v, b) = do
                     cause "BuildSettlement" (p, v, b)
                     cause "UpdateInventory" (p, items')
                 else do
-                    cause "Send" (u, RespUserInvalidInput)
+                    cause "Send" ([u], RespUserInvalidInput)
 
 buildSettlement :: Rule Catan (Player, VertIx, Building)
 buildSettlement (p, v, b) = do
@@ -474,7 +467,7 @@ userBuildRoad (u, l) = do
                     cause "BuildRoad" (p, l)
                     cause "UpdateInventory" (p, items')
                 else
-                    cause "Send" (u, RespUserInvalidInput)
+                    cause "Send" ([u], RespUserInvalidInput)
 
 buildRoad :: Rule Catan (Player, LineIx)
 buildRoad (p, l) = do
