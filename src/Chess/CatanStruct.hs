@@ -208,23 +208,37 @@ vertTileNeighs (VertIx (TileIx x y) True) = [
     ]
 
 {-
-      F     .
-     / a   / \
-    /   \ /   \
-   .     .     .
-   | 0,0 | 1,0 |
-   c     |     |
-   .     .     .
-  / a   b a   /
- /   \ /   \ /
-.     T     .
-| 0,1 | 1,1 |
-c     c     |
-.     .     .
- \   b \   b
-  \ /   \ /
-   .     .
+
+
+      -1,-1F 0,-1.
+          / a   / \
+         /   \ /   \
+        .     .     .
+   -1,0 | 0,0 | 1,0 |
+        c     |     |
+        .     .     .
+       / a   b a   /
+      /   \ /   \ /
+     .     T     .
+     | 0,1 | 1,1 |
+     c     c     |
+     .     .     .
+      \   b \   b
+       \ /   \ /
+        .     .
 -}
+
+{-
+E.g.,
+
+
+d(a,b,c,b) = c - a
+d(a,b,a,d) = d - a
+
+-}
+
+hexDist :: TileIx -> TileIx -> Int
+hexDist (TileIx x1 y1) (TileIx x2 y2) = _
 
 vertLineNeighs :: VertIx -> [LineIx]
 vertLineNeighs (VertIx (TileIx x y) False) = [
@@ -268,6 +282,7 @@ catanGame :: Game Catan
 catanGame = mempty
     & registerRule "ServerStarted" serverStarted
     & registerRule "Start" startRule
+    & registerRule "GenerateMap" generateMap
     & registerRule "UserConnect" userConnect
     & registerRule "UserDisconnect" userDisconnect
     & registerRule "Send" sendRule
@@ -323,12 +338,24 @@ catan = logGame' catanGame
 catanFinal :: [Action] -> ([Action], Catan)
 catanFinal as = unsafePerformIO $ catan catan0 as
 
+{-
+TODO add phase in which client can configure the map/settings
+TODO randomly generate map
+
+TODO hexagonal distance
+-}
+
 startRule :: Rule Catan ()
 startRule () = do
     numPlayers <- use catanMaxPlayers
     catanInventories .= M.fromList [(Player i, mempty) | i <- [0 .. numPlayers - 1]]
     catanStarted .= True
     cause "InitialStart" ()
+
+generateMap :: Rule Catan ()
+generateMap () = do
+    let ixs = [()]
+    _
 
 serverStarted :: Rule Catan (TMVar (M.Map User Connection))
 serverStarted r = do
