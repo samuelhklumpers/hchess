@@ -32,7 +32,7 @@ import Data.Dynamic (toDyn)
 import GHC.Stack (HasCallStack)
 
 
-import Chess.Internal
+import Internal
 import Chess.Structure
 import Chess.Rules
 import Control.Concurrent (myThreadId, ThreadId)
@@ -41,6 +41,7 @@ import Debug.Trace (trace)
 import Network.WebSockets.Connection (connectionSentClose)
 import Data.Functor (void)
 import Data.Proxy (Proxy(..))
+import Game
 
 
 chess' :: HasCallStack => Game ChessState -> Game ChessState

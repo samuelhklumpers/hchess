@@ -1,6 +1,6 @@
 cabal-version: 2.2
 
--- This file has been generated from package.yaml by hpack version 0.36.0.
+-- This file has been generated from package.yaml by hpack version 0.37.0.
 --
 -- see: https://github.com/sol/hpack
 
@@ -25,11 +25,14 @@ source-repository head
 
 library
   exposed-modules:
+      Automata
+      Automata.Rules
+      Automata.Structure
       Chess
-      Chess.Game
-      Chess.Internal
       Chess.Rules
       Chess.Structure
+      Game
+      Internal
   other-modules:
       Paths_hchess
   autogen-modules:
@@ -53,6 +56,7 @@ library
 executable hchess-exe
   main-is: Main.hs
   other-modules:
+      ChessMain
       Paths_hchess
   autogen-modules:
       Paths_hchess

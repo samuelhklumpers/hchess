@@ -5,7 +5,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE LambdaCase #-}
 
-module Chess.Rules  ( module Chess.Game , module Chess.Rules ) where
+module Chess.Rules  ( module Chess.Rules ) where
 
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -22,9 +22,9 @@ import Control.Concurrent.STM
     ( atomically, readTMVar, TMVar )
 
 
-import Chess.Game
+import Game
 import Chess.Structure
-import Chess.Internal
+import Internal
 
 import Control.Monad.Trans.Except (runExceptT, throwE)
 import Control.Monad.Trans.Class (lift)

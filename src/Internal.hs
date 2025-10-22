@@ -1,4 +1,4 @@
-module Chess.Internal ( module Chess.Internal ) where
+module Internal ( module Internal ) where
 
 import Control.Monad (forM_)
 import Control.Concurrent.STM.TMVar (TMVar, writeTMVar, takeTMVar)
@@ -30,6 +30,12 @@ enumFromToL' x y
     | otherwise = drop 1 $ reverse out
     where
     out = enumFromTo (min x y) (max x y)
+
+cyclePrev :: (Eq a, Enum a, Bounded a) => a -> a
+cyclePrev x = if x == minBound then maxBound else pred x
+
+cycleNext :: (Eq a, Enum a, Bounded a) => a -> a
+cycleNext x = if x == maxBound then minBound else succ x
 
 manhattan :: (Int, Int) -> (Int, Int) -> Int
 manhattan (x, y) (v, w) = max (abs $ x - v) (abs $ y - w)

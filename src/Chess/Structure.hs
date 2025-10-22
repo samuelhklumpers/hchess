@@ -20,7 +20,7 @@ import qualified Data.Set as S
 import Data.Maybe (catMaybes, mapMaybe)
 import Type.Reflection (Typeable)
 
-import Chess.Internal
+import Internal
 import Data.List (intercalate)
 import Data.Char (toLower)
 

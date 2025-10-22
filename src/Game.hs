@@ -2,7 +2,7 @@
 RankNTypes, GADTs, ScopedTypeVariables, TypeApplications, PatternSynonyms #-}
 
 
-module Chess.Game ( module Chess.Game ) where
+module Game ( module Game ) where
 
 import qualified Data.Map as M
 
