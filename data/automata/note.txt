@@ -1,0 +1,77 @@
+1: > f0
+>, f0
+f0: 2 space
+regular walk
+
+2: > L f0
+>, L, f0
+f0: 3 space
+regular walk
+
+3: > rL f0
+>, L, f0
+r
+f0: 3 space
+regular walk colour
+
+4: > rf0 L >
+2 >, L, f0
+r
+f0: 4 space
+recognizer, counting*
+
+5: > bf0 > rL
+2 >, L, f0
+r, b
+f0: 4 space
+recognizer, counting colour
+
+6: > rL > bR f0
+2 >, L, R, f0
+r, b
+f0: 5 space
+regular walk colour
+
+7: > bL > rL f0
+2 >, 2 L, R, f0
+r, b
+f0: 5 space
+skipping* walk
+
+8: > rL bL > rR f0
+2 >, 2 L, R, f0
+2 r, b
+f0: 6 space
+skipping* walk
+
+x1 -> 9: > bL rL R r> f0
+2 >, 2 L, R, f0
+2 r, b
+f0: 6 space
+skipping walk
+
+x2 -> 8: > b> L rR f0
+2 >, L, R, f0
+r, b
+f0: 5 space
+skipping walk/counting colour
+
+x3 -> 10: > bR r> rL f0
+2 >, L, R, f0
+2 r, b
+f0: 5 space
+skipping walk
+
+(PS: a skipping walk is just a recognizer that uses a coloured sequence rather than a coloured funcall)
+
+11:
+f0, f1
+8 total
+2 r, b
+f0: 6 space
+f1: 2 space
+skipping walk
+
+11 + x:
+f0, 2 f1
+counting
