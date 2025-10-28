@@ -1,0 +1,22 @@
+> f0
+
+L >
+
+> rL f0
+
+> rf0 L >
+
+> bf0 > rL
+
+> rL > bR f0
+
+> rR > rL f0
+
+> b> L rR f0
+
+> bL rL R r> f0
+
+> bR r> rL f0
+
+> rL bL > rR f0
+

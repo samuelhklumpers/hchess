@@ -1,31 +1,51 @@
 {-# LANGUAGE RankNTypes #-}
+
 module Automata.Rules where
 
 import GHC.Stack (HasCallStack)
-import Control.Lens.Combinators (use, At (..), Ixed (..), pre, to)
-import Control.Monad (when)
+import Control.Lens.Combinators (use, At (..), Ixed (..), pre, to, _head, Lens', Zoom (..))
 
 import Game (Rule, cause, effect)
 import Automata.Structure
 import Control.Lens.Operators ((%=), (.=))
 import Data.Maybe (isJust)
 import Internal (cycleNext, cyclePrev)
+import Text.Parsec
+import Data.Either (fromRight)
+import qualified Data.Map as M
+import Control.Concurrent (threadDelay)
+import Control.Monad.Trans.State (get)
+import System.IO (withFile, IOMode (ReadMode), hGetContents')
+import Data.Foldable (Foldable(..))
+import Debug.Trace (traceM)
 
 
-step :: HasCallStack => Rule Automata ()
-step () = do
+step :: HasCallStack => Lens' s Automata -> Rule s ()
+step aut () = zoom aut $ do
     pos <- use boardIx
-    mt <- use $ board . at pos
+    mTile <- use $ board . at pos
 
-    ptr <- use tapeIx
-    mp <- use $ tape . pre (ix ptr)
+    p@(i, j) <- use iPtr
+    mInstr <- use $ tapes . pre (ix i . ix j)
 
-    case mp of
-        Nothing -> error $ "instruction out of bounds: " ++ show ptr
-        Just instr -> case mt of
-            Nothing -> error $ "tile out of bounds: " ++ show pos
-            Just tile -> do
-                    cause "runOp" (instr, tile, pos, ptr)
+    -- tp <- use tapes
+    -- traceM $ show (pos, i, j, mInstr, tp)
+
+    case mTile of
+        Nothing -> cause "die" ()
+        Just tile -> do
+            if snd tile == Just "*" then
+                cause "star" ()
+            else case mInstr of
+                Nothing -> do
+                    frame <- use (stack . pre _head)
+                    case frame of
+                        Nothing -> cause "die" ()
+                        Just ptr' -> do
+                            iPtr .= ptr'
+                            cause "step" ()
+                Just instr -> cause "runOp" (instr, tile, pos, p)
+
 
 direction :: Direction -> (Int, Int)
 direction N = (0, -1)
@@ -41,8 +61,8 @@ matchColour Nothing _ = True
 matchColour (Just c) (Just c') = c == c'
 matchColour _ _ = False
 
-runOp :: HasCallStack => Rule Automata (Instr, Tile, Ix, Int)
-runOp ((op, ocol), (tcol, _), pos, ptr) = do
+runOp :: HasCallStack => Lens' s Automata -> Rule s (Instr, Tile, Ix, (Int, Int))
+runOp aut ((op, ocol), (tcol, _), pos, ptr@(i, j)) = zoom aut $ do
     if matchColour ocol tcol then
         case op of
             Step -> do
@@ -53,7 +73,7 @@ runOp ((op, ocol), (tcol, _), pos, ptr) = do
                 if ok then do
                     boardIx .= pos'
                     cause "next" ptr
-                else 
+                else
                     cause "die" ()
             TurnL -> do
                 dir %= cyclePrev
@@ -61,17 +81,142 @@ runOp ((op, ocol), (tcol, _), pos, ptr) = do
             TurnR -> do
                 dir %= cycleNext
                 cause "next" ptr
-            Reset -> do
-                tapeIx .= 0
-                --cause "step" ()
+            Call i' -> do
+                iPtr .= (i', 0)
+                stack %= ((i, j + 1) :)
+                cause "endStep" ()
+            Paint _ -> error "no you don't"
     else
         cause "next" ptr
 
-die :: HasCallStack => Rule Automata ()
-die () = effect (putStrLn "You died :(")
+die :: HasCallStack => Rule s ()
+die () = do
+    effect $ do
+        putStrLn "You died :("
+        putStrLn ""
+    cause "loadLevel" ()
 
-next :: HasCallStack => Rule Automata Int
-next ptr = do
-    tapeLen <- use (tape . to length)
-    tapeIx .= (ptr + 1) `mod` tapeLen
-    --cause "step" ()
+next :: HasCallStack => Lens' s Automata -> Rule s (Int, Int)
+next aut (i, j) = zoom aut $ do
+    iPtr .= (i, j + 1)
+    cause "endStep" ()
+
+parseTapes :: IO [[Instr]]
+parseTapes = do
+    xs <- getLine
+    if null xs then
+        return []
+    else
+        let t = fromRight (error "parsing") (parse tapeParser "" xs)
+        in fmap (t :) parseTapes
+
+intP :: Parsec String u Int
+intP = read <$> many1 digit
+
+tapeParser :: Parsec String u [Instr]
+tapeParser = flip sepBy (char ' ') $ do
+    c <- fmap (:[]) <$> optionMaybe (oneOf "br")
+    o <- choice
+        [ char '>' >> pure Step
+        , char 'L' >> pure TurnL
+        , char 'R' >> pure TurnR
+        , char 'f' >> fmap Call intP
+        ]
+    return (o, c)
+
+submit :: Lens' s Automata -> Rule s ()
+submit aut () = zoom aut $ do
+    x <- get
+    tapes' <- effect $ do
+        putStrLn $ pprintAutomata x
+        putStrLn ""
+        putStrLn "please enter your program below, press Enter twice to finalize:"
+        parseTapes
+
+    tapes .= tapes'
+    cause "step" ()
+
+pprintAutomata :: Automata -> String
+pprintAutomata g = unlines $
+    [[checkTile i j | i <- [0..x]] | j <- [0..y]]
+    where
+    checkTile i j = if (i, j) == _boardIx g
+        then mkDir (_dir g)
+        else mkTile (bd M.!? (i, j))
+
+    x = maximum (fst <$> M.keys bd)
+    y = maximum (snd <$> M.keys bd)
+
+    mkDir N = '^'
+    mkDir E = '>'
+    mkDir S = 'v'
+    mkDir W = '<'
+
+    mkTile Nothing = ' '
+    mkTile (Just (Nothing, mark)) = maybe '.' head mark
+    mkTile (Just (Just c, _)) = head c
+
+    bd = _board g
+
+showAndWait :: Int -> Lens' s Automata -> Rule s ()
+showAndWait ms aut () = do
+    x <- use aut
+    effect $ do
+        putStrLn $ pprintAutomata x
+        threadDelay (1000 * ms)
+        -- this is bad behaviour 
+        -- I'll let you know when I figure out how to push events back on the queue from forkIO
+    cause "step" ()
+
+win1 :: Rule AutomataLevels ()
+win1 () = do
+    effect $ do
+        putStrLn "yippie you win :)"
+        putStrLn ""
+    level %= (+1)
+    cause "loadLevel" ()
+
+parseLevel :: Int -> IO (Board, (Ix, Direction)) -- and restrictions
+parseLevel i = do
+    let fp = "data/automata/levels/level" ++ show (i + 1) ++ ".dat"
+    withFile fp ReadMode $ \ fh -> do
+        x <- hGetContents' fh
+
+        return $ either (\ x -> error $ "error parsing level: " ++ fp ++ ",\n" ++ show x) id
+               $ parse ((,) <$> boardP <*> ((,) <$> ixP <*> dirP)) fp x
+
+ixP :: Parsec String u Ix
+ixP = do
+    x <- intP
+    _ <- char ' '
+    y <- intP
+    _ <- char '\n'
+    return (x, y)
+
+dirP :: Parsec String u Direction
+dirP = read . (:[]) <$> oneOf "NESW"
+
+boardP :: Parsec String u Board
+boardP = do
+    xss <- flip sepBy (char '\n') $ many $ choice
+        [ char ' ' >> pure Nothing
+        , char '.' >> pure (Just (Nothing, Nothing))
+        , char '*' >> pure (Just (Nothing, Just "*"))
+        , fmap (\ c -> Just (Just [c], Nothing)) (oneOf "rb")
+        ]
+
+    return $ foldl' (\ m (i, xs) -> foldl' (\ m' (j, x) -> M.alter (const x) (j, i) m') m (zip [0..] xs)) mempty (zip [0..] xss)
+
+loadLevel :: Rule AutomataLevels ()
+loadLevel () = do
+    x <- use level
+    (bd, (pos, d)) <- effect (parseLevel x)
+    aut .=  MkAutomata
+        { _board = bd
+        , _tapes = []
+        , _iPtr = (0, 0)
+        , _stack = []
+        , _boardIx = pos
+        , _dir = d
+        }
+    cause "askSubmit" ()

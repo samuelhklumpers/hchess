@@ -1,22 +1,15 @@
+{-# LANGUAGE LambdaCase #-}
 module Automata where
 
-import Automata.Structure (Automata (..), Direction (..), Board, Instr, Op (..))
 import qualified Data.Map as M
-import Game (Game, registerRule)
+import Game (Game, registerRule, runGame', mkEvent)
 import Data.Function ((&))
+
+import Automata.Structure (Automata (..), Direction (..), Board, Instr, Op (..), AutomataLevels (..), aut)
 import Automata.Rules
-
-{-
-B R.R
-. . .
-. . .
-.   .
-R...R
-
-2 2 N
-
-sRr
--}
+import Text.Parsec (parse, char, oneOf, digit, Parsec)
+import Data.Either (fromRight)
+import Text.Parsec.Combinator
 
 
 parseBoard :: IO Board
@@ -37,13 +30,13 @@ parseBoard = mkBoard 0 <$> go
             xs <- go
             return (parseLine x : xs)
 
-    parseLine x = map parseTile x
-
     parseTile ' ' = Nothing
     parseTile 'R' = Just (Just "Red", Nothing)
     parseTile 'B' = Just (Just "Blue", Nothing)
     parseTile '.' = Just (Nothing, Nothing)
     parseTile _ = error "parsing board"
+
+    parseLine = map parseTile
 
 parseInit :: IO (Int, Int, Direction)
 parseInit = do
@@ -51,82 +44,61 @@ parseInit = do
     let [x, y, z] = words xs
     return (read x, read y, read z)
 
-parseProg :: IO [Instr]
-parseProg = do
-    x <- getChar
-
-    if x == '\n' then
-        return []
-    else do
-        let y = case x of
-                'R' -> Just "Red"
-                'B' -> Just "Blue"
-                _ -> Nothing
-        k <- case y of
-            Nothing -> return (parseOp x, Nothing)
-            Just c  -> do
-                z <- getChar
-                return (parseOp z, Just c)
-        xs <- parseProg
-        return (k : xs)
-        where
-        parseOp 's' = Step
-        parseOp 'r' = TurnR
-        parseOp 'l' = TurnL
-        parseOp 'x' = Reset
-        parseOp y = error $ "parsing instruction: " ++ [y]
-
 initial :: Automata
 initial = MkAutomata
     { _board = mempty
-    , _tape = []
-    , _tapeIx = 0
+    , _tapes = []
+    , _iPtr = (0, 0)
+    , _stack = []
     , _boardIx = (0, 0)
     , _dir = N
     }
 
+{-
 parseAutomata :: IO Automata
 parseAutomata = do
     bd <- parseBoard
     (x, y, d) <- parseInit
-    prog <- parseProg
+    tapes <- parseTapes
 
     return $  MkAutomata
         { _board = bd
-        , _tape = prog
-        , _tapeIx = 0
+        , _tapes = tapes
+        , _iPtr = (0, 0)
+        , _stack = []
         , _boardIx = (x, y)
         , _dir = d
         }
+-}
 
-pprintAutomata :: Automata -> String
-pprintAutomata g = unlines $
-    [[checkTile i j | i <- [0..x]] | j <- [0..y]]
-    where
-    checkTile i j = if (i, j) == _boardIx g
-        then mkDir (_dir g)
-        else mkTile (bd M.!? (i, j))
-
-    x = maximum (fst <$> M.keys bd)
-    y = maximum (snd <$> M.keys bd)
-
-    mkDir N = '^'
-    mkDir E = '>'
-    mkDir S = 'v'
-    mkDir W = '<'
-
-    mkTile Nothing = ' '
-    mkTile (Just (Nothing, _)) = '.'
-    mkTile (Just (Just c, _)) = head c
-
-    bd = _board g
-
-automata :: Game Automata
+automata :: Game AutomataLevels
 automata = mempty
-    & registerRule "step" step
-    & registerRule "runOp" runOp
-    & registerRule "die" die
-    & registerRule "next" next
+    & registerRule "loadLevel"  loadLevel
+    & registerRule "askSubmit"  (submit    aut)
+    & registerRule "step"       (step      aut)
+    & registerRule "runOp"      (runOp     aut)
+    & registerRule "next"       (next      aut)
+    & registerRule "endStep"    (showAndWait 100 aut)
+    & registerRule "die"        die
+    & registerRule "star"       win1
+
+automataMain :: IO ()
+automataMain = do
+    _ <- runGame' automata (MkAutomataLevels initial 0) [mkEvent "loadLevel" ()]
+    return ()
+
+{-
+automataMain :: IO () 
+automataMain = do
+    g <- parseAutomata
+    go g (runGame' automata)
+    where
+    go g r = do
+        putStrLn $ pprintAutomata g
+        _ <- getLine
+        g' <- r g [mkEvent "step" ()]
+        go g' r
+-}
 
 {-
 - limited program size

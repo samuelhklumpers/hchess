@@ -18,15 +18,21 @@ type Mark = String
 type Colour = String
 
 -- | What should I do?
-data Op = Step | TurnL | TurnR | Reset deriving (Show, Eq)
+data Op = Step | TurnL | TurnR | Call Int | Paint Colour deriving (Show, Eq)
 type Instr = (Op, Maybe Colour)
 
 data Automata = MkAutomata
     { _board :: Board
-    , _tape  :: [Instr]
-    , _tapeIx :: Int
+    , _tapes :: [[Instr]]
+    , _iPtr :: (Int, Int)
+    , _stack :: [(Int, Int)]
     , _boardIx :: Ix
     , _dir :: Direction
     } deriving (Show, Eq)
 makeLenses ''Automata
 
+data AutomataLevels = MkAutomataLevels 
+    { _aut :: Automata
+    , _level :: Int
+    } deriving (Show, Eq)
+makeLenses ''AutomataLevels

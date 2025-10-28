@@ -6,8 +6,8 @@ module Game ( module Game ) where
 
 import qualified Data.Map as M
 
-import Control.Monad.Trans.State.Lazy ( StateT(runStateT) , get, execStateT, put )
-import Control.Monad.Trans.Writer.Lazy ( tell, Writer, runWriter )
+import Control.Monad.Trans.State.Lazy ( StateT(runStateT) , get, execStateT, put, mapStateT )
+import Control.Monad.Trans.Writer.Lazy ( tell, Writer, runWriter, WriterT (..) )
 import Control.Monad.Trans.Class ( MonadTrans(..) )
 import Control.Monad (forM_)
 import Data.Dynamic (Dynamic (..), Typeable, toDyn)
@@ -23,8 +23,13 @@ import Debug.Trace (trace)
 
 -- * Events, Rules, and Games
 
-data Action = Event String Dynamic | Effect (IO ())
-type Consequence s = StateT s (ReaderT Events (Writer [Action]))
+{-
+data Action s b = Modify (s -> s) | Event String Dynamic | Effect (IO b)
+-}
+
+data Action = Event String Dynamic
+--  | Effect (IO ())
+type Consequence s = StateT s (ReaderT Events (WriterT [Action] IO))
 type Rule s a = a -> Consequence s ()
 
 argType :: Typeable a => Rule s a -> TypeRep a
@@ -58,8 +63,8 @@ cause e a = lift $ do
             Nothing -> error $ "Argument type " ++ show (typeOf a) ++ " does not match expected type " ++ show t ++ " for event " ++ e ++ " while running!"
             Just HRefl -> lift $ tell [mkEvent e a]
 
-effect :: IO () -> Consequence s ()
-effect = lift . lift . tell . (:[]) . Effect
+effect :: IO a -> Consequence s a
+effect = lift . lift . lift
 
 registerEvent :: String -> SomeTypeRep -> Game s -> Game s
 registerEvent e t (es , rs) = (es & at e ?~ t , rs)
@@ -117,11 +122,14 @@ runGame g@(events, rules) acts = do
                         _ <- error $ "Actual event type " ++ show ta ++ " of " ++ e ++ " does not match expected type " ++ show (TypeRep @tr) ++ " while running"
                         return ()
                     Just HRefl -> do
+                        let shuffle ((_, s), r) = (r, s)
+                        acts' <- mapStateT (fmap shuffle . runWriterT . flip runReaderT events) $ rule a
+                        {-
                         s_ <- get
-                        let ((_ , s_') , acts') = runWriter $ flip runReaderT events $ flip runStateT s_ $ rule a
+                        ((_ , s_') , acts') <- runWriterT $ flip runReaderT events $ flip runStateT s_ $ rule a
                         put s_'
+                        -}
                         runGame g acts'
-        Effect ef -> liftIO ef
 
 runGame' :: Game s -> Runner' s
 runGame' g s acts = execStateT (runGame g acts) s
@@ -129,6 +137,8 @@ runGame' g s acts = execStateT (runGame g acts) s
 type Simulator s = [Action] -> s -> s
 
 simGameUntil :: (Action -> Bool) -> Game s -> [Action] -> s -> Either (s , Action) s
+simGameUntil = error "deprecated: simGameUntil"
+{-
 simGameUntil _ _                 []           s = Right s
 simGameUntil p g@(events, rules) (act : acts) s
     | p act = Left (s , act)
@@ -144,6 +154,7 @@ simGameUntil p g@(events, rules) (act : acts) s
                     let ((_ , s'') , acts') = runWriter $ flip runReaderT events $ flip runStateT s' $ rule a
                     simGameUntil p g acts' s''
         Effect _ -> simGameUntil p g acts s
+-}
 
 runGameIO :: Runner' s -> IO Action -> s -> IO s
 runGameIO runner input s = do
