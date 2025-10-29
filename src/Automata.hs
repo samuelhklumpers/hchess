@@ -10,6 +10,7 @@ import Automata.Rules
 import Text.Parsec (parse, char, oneOf, digit, Parsec)
 import Data.Either (fromRight)
 import Text.Parsec.Combinator
+import System.Environment (getArgs)
 
 
 parseBoard :: IO Board
@@ -52,6 +53,7 @@ initial = MkAutomata
     , _stack = []
     , _boardIx = (0, 0)
     , _dir = N
+    , _gas = 0
     }
 
 {-
@@ -84,7 +86,12 @@ automata = mempty
 
 automataMain :: IO ()
 automataMain = do
-    _ <- runGame' automata (MkAutomataLevels initial 0) [mkEvent "loadLevel" ()]
+    args <- getArgs
+    let level = case args of
+            (x:_) -> read x
+            _ -> 0
+
+    _ <- runGame' automata (MkAutomataLevels initial level) [mkEvent "loadLevel" ()]
     return ()
 
 {-

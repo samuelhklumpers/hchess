@@ -20,3 +20,18 @@ L >
 
 > rL bL > rR f0
 
+> r> rL bR f1
+> f0
+
+> bf1 f0
+> rf1 L
+
+> bL b> rf0 f1
+> rf0
+
+> bf1 > >
+f0 f0 L
+
+f1 L > f0
+> bf2 rf1 >
+> bf2 >

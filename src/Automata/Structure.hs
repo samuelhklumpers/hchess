@@ -28,6 +28,7 @@ data Automata = MkAutomata
     , _stack :: [(Int, Int)]
     , _boardIx :: Ix
     , _dir :: Direction
+    , _gas :: Int
     } deriving (Show, Eq)
 makeLenses ''Automata
 

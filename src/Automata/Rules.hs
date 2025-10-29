@@ -15,9 +15,11 @@ import Data.Either (fromRight)
 import qualified Data.Map as M
 import Control.Concurrent (threadDelay)
 import Control.Monad.Trans.State (get)
-import System.IO (withFile, IOMode (ReadMode), hGetContents')
+import System.IO (withFile, IOMode (ReadMode), hGetContents', stdout, hFlush)
 import Data.Foldable (Foldable(..))
 import Debug.Trace (traceM)
+import Control.Monad (when)
+import Data.List (intercalate)
 
 
 step :: HasCallStack => Lens' s Automata -> Rule s ()
@@ -31,6 +33,9 @@ step aut () = zoom aut $ do
     -- tp <- use tapes
     -- traceM $ show (pos, i, j, mInstr, tp)
 
+    st <- use stack
+    effect $ putStrLn $ intercalate "->" (fmap show (p:st))
+
     case mTile of
         Nothing -> cause "die" ()
         Just tile -> do
@@ -39,6 +44,7 @@ step aut () = zoom aut $ do
             else case mInstr of
                 Nothing -> do
                     frame <- use (stack . pre _head)
+                    stack %= tail
                     case frame of
                         Nothing -> cause "die" ()
                         Just ptr' -> do
@@ -83,7 +89,9 @@ runOp aut ((op, ocol), (tcol, _), pos, ptr@(i, j)) = zoom aut $ do
                 cause "next" ptr
             Call i' -> do
                 iPtr .= (i', 0)
-                stack %= ((i, j + 1) :)
+                Just tl <- use $ tapes . pre (ix i . to length)
+                when (j + 1 < tl) $ -- tail-call optimization
+                    stack %= ((i, j + 1) :)
                 cause "endStep" ()
             Paint _ -> error "no you don't"
     else
@@ -102,13 +110,18 @@ next aut (i, j) = zoom aut $ do
     cause "endStep" ()
 
 parseTapes :: IO [[Instr]]
-parseTapes = do
-    xs <- getLine
-    if null xs then
-        return []
-    else
-        let t = fromRight (error "parsing") (parse tapeParser "" xs)
-        in fmap (t :) parseTapes
+parseTapes = go (0 :: Int)    
+    where
+    go i = do
+        putStr ("f" ++ show i ++ ": ")
+        hFlush stdout
+        xs <- getLine
+        
+        if null xs then
+            return []
+        else do
+            let t = either (\ x -> error $ "error parsing program: " ++ xs ++ ",\n" ++ show x) id (parse tapeParser "" xs)
+            fmap (t :) (go (i + 1))
 
 intP :: Parsec String u Int
 intP = read <$> many1 digit
@@ -218,5 +231,11 @@ loadLevel () = do
         , _stack = []
         , _boardIx = pos
         , _dir = d
+        , _gas = 1000
         }
     cause "askSubmit" ()
+
+{-
+runOutOfGas :: Lens' s Automata -> Rule s ()
+runOutOfGas = _ 
+-}
