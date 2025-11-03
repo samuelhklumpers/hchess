@@ -105,21 +105,28 @@ f2: > bf2 >
 #f2 = 3
 arithmetic
 
+17:
+
+unary adder
+
+18:
+
+unary mult
+
+19:
+
+unary div
+you might want a transpiler at this point
+
+latch:
+you need a 2-way latch with reset to make an n-way latch
+
+not:
+formally, you'd need to wait for the latch, but we can pretend this is implicit
+(or we can introduce a wait primitive which doesn't tick).
+
 
 ---
-
-12:
-f0, f1
-8 total
-2 r, b
-f0: 6 space
-f1: 2 space
-skipping walk
-
-13 + x:
-f0, 2 f1
-counting
-
 
 
 make a level that softlocks you if you slightly mess up (i.e., spin in circles)
